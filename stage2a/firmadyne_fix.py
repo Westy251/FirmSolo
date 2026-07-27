@@ -452,46 +452,169 @@ fl_run_init_process = "init/main.c"
 ### The last list are kernel exceptions to the rules so these will search for the extra
 ### keyword
 hooks_dict = {
-        "inet_bind": [inet_bind,fl_inet_bind,"all"], 
-        "inet_accept":[inet_accept,fl_inet_accept,"all"], 
-        "register_vlan_dev":[register_vlan_dev,fl_register_vlan_dev,"above linux-2.6.27"], 
-        "register_vlan_dev2":[register_vlan_dev2,fl_register_vlan_dev,"only_between linux-2.6.23 linux-2.6.27","register_vlan_dev",[]], 
-        "register_vlan_device":[register_vlan_device,fl_register_vlan_device,"below linux-2.6.23"], 
-        "__inet_insert_ifa":[inet_insert_ifa,fl_inet_insert_ifa,"all"], 
-        "br_add_if":[br_add_if,fl_br_add_if,"all"],
-        "sys_socket":[sys_socket,fl_sys_socket,"only_above linux-2.6.28.1","SYSCALL_DEFINE3(socket",[]], 
-        "sys_socket2":[sys_socket,fl_sys_socket,"only_between linux-2.6.27.12 linux-2.6.28","SYSCALL_DEFINE3(socket",[]], 
-        "sys_socket3":[sys_socket,fl_sys_socket,"only_below ","sys_socket",["linux-2.6.28"]], 
-        "sys_setsockopt":[sys_setsockopt,fl_sys_setsockopt,"only_above linux-2.6.28.1","SYSCALL_DEFINE5(setsockopt",[]], 
-        "sys_setsockopt2":[sys_setsockopt,fl_sys_setsockopt,"only_between linux-2.6.27.12 linux-2.6.28","SYSCALL_DEFINE5(setsockopt",[]], 
-        "sys_setsockopt3":[sys_setsockopt,fl_sys_setsockopt,"only_below linux-2.6.27.12","sys_setsockopt",["linux-2.6.28"]], 
-        "do_mount":[do_mount,fl_do_mount,"all"],"vfs_mknod":[vfs_mknod,fl_vfs_mknod,"all"],
-        "vfs_unlink":[vfs_unlink,fl_vfs_unlink,"all"],
-        "do_vfs_ioctl_old":[do_vfs_ioctl_old,fl_do_vfs_ioctl,"only_between linux-2.6.25 linux-2.6.36","do_vfs_ioctl",[]],
-        "do_vfs_ioctl":[do_vfs_ioctl,fl_do_vfs_ioctl,"only_above linux-2.6.36","do_vfs_ioctl",[]],
-        "vfs_ioctl":[vfs_ioctl,fl_do_vfs_ioctl,"only_below linux-2.6.25","vfs_ioctl",[]],
-        "sys_reboot":[sys_reboot,fl_sys_reboot,"only_above linux-2.6.29","SYSCALL_DEFINE4(reboot",[]],
-        "sys_reboot2":[sys_reboot_old,fl_sys_reboot,"only_between linux-2.6.27.12 linux-2.6.28","SYSCALL_DEFINE4(reboot",[]],
-        "sys_reboot3":[sys_reboot_old,fl_sys_reboot,"only_between linux-2.6.28 linux-2.6.28 linux-2.6.29","sys_reboot",[]],
-        "sys_reboot4":[sys_reboot_old,fl_sys_reboot,"only_below linux-2.6.27.12","sys_reboot",[]],
-        "do_sys_open":[do_sys_open,fl_do_sys_open,"all"],
-        "sys_close":[sys_close,fl_sys_close,"only_above linux-2.6.28.1","SYSCALL_DEFINE1(close",[]],
-        "sys_close2":[sys_close,fl_sys_close,"only_between linux-2.6.27.12 linux-2.6.28","SYSCALL_DEFINE1(close",[]],
-        "sys_close3":[sys_close,fl_sys_close,"only_below linux-2.6.27.12","sys_close",["linux-2.6.28"]],
-        "do_execve":[do_execve,fl_do_execve,"below linux-3.0.0"],
-        "do_execve_common":[do_execve_common,fl_do_execve,"above linux-3.0.0"],
-        "do_fork":[do_fork,fl_do_fork,"all"],
-        "do_fork_ret":[do_fork_ret,fl_do_fork_ret,"all"],
-        "do_exit":[do_exit,fl_do_exit,"all"],
-        "send_signal":[send_signal,fl_send_signal,"all"],
-        "mmap_region":[mmap_region,fl_mmap_region,"above linux-2.6.23"],
-        "do_mmap_pgoff":[do_mmap_pgoff,fl_mmap_region,"below linux-2.6.23"],
-        "__setup_irq":[__setup_irq,fl_setup_irq, "only_between linux-2.6.28 linux-2.6.37","__setup_irq",[]],
-        "__setup_irq_new":[__setup_irq_new,fl_setup_irq, "only_above linux-2.6.37","__setup_irq",[]],
-        "setup_irq":[setup_irq,fl_setup_irq, "below linux-2.6.28"],
-        "run_init_process":[run_init_process,fl_run_init_process, "all"]
-#        "device_add":[device_add,fl_device_add,"all"]
-        }
+    "inet_bind": [inet_bind, fl_inet_bind, "all"],
+    "inet_accept": [inet_accept, fl_inet_accept, "all"],
+    "register_vlan_dev": [
+        register_vlan_dev,
+        fl_register_vlan_dev,
+        "above linux-2.6.27",
+    ],
+    "register_vlan_dev2": [
+        register_vlan_dev2,
+        fl_register_vlan_dev,
+        "only_between linux-2.6.23 linux-2.6.27",
+        "register_vlan_dev",
+        [],
+    ],
+    "register_vlan_device": [
+        register_vlan_device,
+        fl_register_vlan_device,
+        "below linux-2.6.23",
+    ],
+    "__inet_insert_ifa": [inet_insert_ifa, fl_inet_insert_ifa, "all"],
+    "br_add_if": [br_add_if, fl_br_add_if, "all"],
+    "sys_socket": [
+        sys_socket,
+        fl_sys_socket,
+        "only_above linux-2.6.28.1",
+        "SYSCALL_DEFINE3(socket",
+        [],
+    ],
+    "sys_socket2": [
+        sys_socket,
+        fl_sys_socket,
+        "only_between linux-2.6.27.12 linux-2.6.28",
+        "SYSCALL_DEFINE3(socket",
+        [],
+    ],
+    "sys_socket3": [
+        sys_socket,
+        fl_sys_socket,
+        "only_below ",
+        "sys_socket",
+        ["linux-2.6.28"],
+    ],
+    "sys_setsockopt": [
+        sys_setsockopt,
+        fl_sys_setsockopt,
+        "only_above linux-2.6.28.1",
+        "SYSCALL_DEFINE5(setsockopt",
+        [],
+    ],
+    "sys_setsockopt2": [
+        sys_setsockopt,
+        fl_sys_setsockopt,
+        "only_between linux-2.6.27.12 linux-2.6.28",
+        "SYSCALL_DEFINE5(setsockopt",
+        [],
+    ],
+    "sys_setsockopt3": [
+        sys_setsockopt,
+        fl_sys_setsockopt,
+        "only_below linux-2.6.27.12",
+        "sys_setsockopt",
+        ["linux-2.6.28"],
+    ],
+    "do_mount": [do_mount, fl_do_mount, "all"],
+    "vfs_mknod": [vfs_mknod, fl_vfs_mknod, "all"],
+    "vfs_unlink": [vfs_unlink, fl_vfs_unlink, "all"],
+    "do_vfs_ioctl_old": [
+        do_vfs_ioctl_old,
+        fl_do_vfs_ioctl,
+        "only_between linux-2.6.25 linux-2.6.36",
+        "do_vfs_ioctl",
+        [],
+    ],
+    "do_vfs_ioctl": [
+        do_vfs_ioctl,
+        fl_do_vfs_ioctl,
+        "only_above linux-2.6.36",
+        "do_vfs_ioctl",
+        [],
+    ],
+    "vfs_ioctl": [
+        vfs_ioctl,
+        fl_do_vfs_ioctl,
+        "only_below linux-2.6.25",
+        "vfs_ioctl",
+        [],
+    ],
+    "sys_reboot": [
+        sys_reboot,
+        fl_sys_reboot,
+        "only_above linux-2.6.29",
+        "SYSCALL_DEFINE4(reboot",
+        [],
+    ],
+    "sys_reboot2": [
+        sys_reboot_old,
+        fl_sys_reboot,
+        "only_between linux-2.6.27.12 linux-2.6.28",
+        "SYSCALL_DEFINE4(reboot",
+        [],
+    ],
+    "sys_reboot3": [
+        sys_reboot_old,
+        fl_sys_reboot,
+        "only_between linux-2.6.28 linux-2.6.28 linux-2.6.29",
+        "sys_reboot",
+        [],
+    ],
+    "sys_reboot4": [
+        sys_reboot_old,
+        fl_sys_reboot,
+        "only_below linux-2.6.27.12",
+        "sys_reboot",
+        [],
+    ],
+    "do_sys_open": [do_sys_open, fl_do_sys_open, "all"],
+    "sys_close": [
+        sys_close,
+        fl_sys_close,
+        "only_above linux-2.6.28.1",
+        "SYSCALL_DEFINE1(close",
+        [],
+    ],
+    "sys_close2": [
+        sys_close,
+        fl_sys_close,
+        "only_between linux-2.6.27.12 linux-2.6.28",
+        "SYSCALL_DEFINE1(close",
+        [],
+    ],
+    "sys_close3": [
+        sys_close,
+        fl_sys_close,
+        "only_below linux-2.6.27.12",
+        "sys_close",
+        ["linux-2.6.28"],
+    ],
+    "do_execve": [do_execve, fl_do_execve, "below linux-3.0.0"],
+    "do_execve_common": [do_execve_common, fl_do_execve, "above linux-3.0.0"],
+    "do_fork": [do_fork, fl_do_fork, "all"],
+    "do_fork_ret": [do_fork_ret, fl_do_fork_ret, "all"],
+    "do_exit": [do_exit, fl_do_exit, "all"],
+    "send_signal": [send_signal, fl_send_signal, "all"],
+    "mmap_region": [mmap_region, fl_mmap_region, "above linux-2.6.23"],
+    "do_mmap_pgoff": [do_mmap_pgoff, fl_mmap_region, "below linux-2.6.23"],
+    "__setup_irq": [
+        __setup_irq,
+        fl_setup_irq,
+        "only_between linux-2.6.28 linux-2.6.37",
+        "__setup_irq",
+        [],
+    ],
+    "__setup_irq_new": [
+        __setup_irq_new,
+        fl_setup_irq,
+        "only_above linux-2.6.37",
+        "__setup_irq",
+        [],
+    ],
+    "setup_irq": [setup_irq, fl_setup_irq, "below linux-2.6.28"],
+    "run_init_process": [run_init_process, fl_run_init_process, "all"],
+    #        "device_add":[device_add,fl_device_add,"all"]
+}
 
 
 main_template = """
@@ -543,54 +666,55 @@ EXPORT_SYMBOL(firmsolo);
 
 def find_cscope_files(kfile):
 
-    #find_cmd = "find . -path \"./arch/*\" ! -path \"./arch/mips*\" -prune -o -path \"./Documentation*\" -prune -o -name \"*.[cxsS]\" -print >./cscope.files"
+    # find_cmd = "find . -path \"./arch/*\" ! -path \"./arch/mips*\" -prune -o -path \"./Documentation*\" -prune -o -name \"*.[cxsS]\" -print >./cscope.files"
     find_cmd = "find . -name {} -print >./cscope.files".format(kfile.split("/")[-1])
-    #print(find_cmd)
+    # print(find_cmd)
     ### Remove all the prior cscope files
-    #try:
-        #res = subprocess.call("rm cscope.*",shell=True)
-    #except:
-        #print(traceback_format.exc())
+    # try:
+    # res = subprocess.call("rm cscope.*",shell=True)
+    # except:
+    # print(traceback_format.exc())
 
     try:
-        res = subprocess.call(find_cmd,shell=True)
+        res = subprocess.call(find_cmd, shell=True)
     except:
         print(traceback.format_exc())
+
 
 def create_cscope_db():
     try:
-        res= subprocess.call("cscope -q -b",shell=True)
+        res = subprocess.call("cscope -q -b", shell=True)
     except:
         print(traceback.format_exc())
 
-def run_cscope(wts,level):
+
+def run_cscope(wts, level):
     res = ""
-    cmd = 'cscope -d -{}{}'.format(level,wts)
+    cmd = "cscope -d -{}{}".format(level, wts)
     try:
-        res = subprocess.check_output(cmd,shell=True).decode("utf-8")
+        res = subprocess.check_output(cmd, shell=True).decode("utf-8")
     except:
         print(traceback.format_exc())
-    
+
     return res
 
 
-
-def modify_file(kfile, wts, tmplt,touched_files):
-    print("Applying patch to",wts)
-    with open(kfile,"r",errors='ignore') as f:
+def modify_file(kfile, wts, tmplt, touched_files):
+    print("Applying patch to", wts)
+    with open(kfile, "r", errors="ignore") as f:
         lines = f.readlines()
     header_included = False
     if kfile not in touched_files:
-        for i,line in enumerate(lines):
+        for i, line in enumerate(lines):
             if "#include" in line:
-                print("Added include fdyne.h in line",i)
-                lines.insert(i,"#include <linux/fdyne.h>\n#include <linux/sched.h>\n")
+                print("Added include fdyne.h in line", i)
+                lines.insert(i, "#include <linux/fdyne.h>\n#include <linux/sched.h>\n")
                 header_included = True
                 break
-    
+
     if "_ret" in wts:
         end = True
-        temp = wts.replace("_ret","")
+        temp = wts.replace("_ret", "")
         wts = temp
     else:
         end = False
@@ -599,85 +723,100 @@ def modify_file(kfile, wts, tmplt,touched_files):
         level = "L1"
     else:
         level = "L6"
-        tmp = '"' + wts.replace("(","(.?)") + '"'
+        tmp = '"' + wts.replace("(", "(.?)") + '"'
         wts = tmp
 
     ### Find the function definition
-    res = run_cscope(wts,level)
-    #print(res)
-    if res != "":
-        results = res.split("\n")
-        #print(results)
-        for rs in results:
+    res = run_cscope(wts, level)
+    matched_tokens = None
+
+    if res:
+        for rs in res.split("\n"):
             tokens = rs.split()
+
+            # Guard: Skip lines that don't have at least 3 tokens (file, symbol, line_num)
+            if len(tokens) < 3:
+                continue
+
             if kfile in tokens[0]:
+                matched_tokens = tokens
                 break
 
-        start_line = int(tokens[2]) if not header_included else int(tokens[2]) + 1
-        #print("Start line",start_line)
-    else: 
-        print("Could not find",wts)
+    # If no valid match was found, exit gracefully instead of crashing
+    if not matched_tokens:
+        print(f"Could not find valid match for {wts}")
         return
-    
-    ### If the function exists the add the template in 
+
+        start_line = int(tokens[2]) if not header_included else int(tokens[2]) + 1
+        # print("Start line",start_line)
+    else:
+        print("Could not find", wts)
+        return
+
+    ### If the function exists the add the template in
     ### the correct place
-    for i, line in enumerate(lines[int(start_line):]):
+    for i, line in enumerate(lines[int(start_line) :]):
         if end == False and "{" in line:
-            #print("Here",line)
+            # print("Here",line)
             index = i + int(start_line) + 1
             for ln in tmplt:
-                lines.insert(index,ln)
+                lines.insert(index, ln)
                 index += 1
             break
         elif end == True and ("return nr" in line or "return pid" in line):
             ### If the return variable is the pid then change the template
             if "pid" in line:
-                temp = tmplt[2].replace("nr)","pid)")
+                temp = tmplt[2].replace("nr)", "pid)")
                 tmplt[2] = temp
-                #print("Fixed",tmplt)
+                # print("Fixed",tmplt)
 
-            #print("Here2",line)
+            # print("Here2",line)
             index = i + int(start_line)
             for ln in tmplt:
-                lines.insert(index,ln)
+                lines.insert(index, ln)
                 index += 1
             break
-    
-    with open(kfile,"w") as f:
+
+    with open(kfile, "w") as f:
         f.writelines(lines)
 
 
 def fix_template(tmplt):
     lines = tmplt.split("\n")
 
-    template = list(map(lambda x:x+"\n",lines))
+    template = list(map(lambda x: x + "\n", lines))
 
     return template
 
 
 def fix_main():
-    with open("init/main.c","r",errors='ingore') as f:
+    with open("init/main.c", "r", errors="ingore") as f:
         lines = f.readlines()
-    
+
     template = fix_template(main_template)
 
     for i, line in enumerate(lines):
-        if "char * envp_init[MAX_INIT_ENVS+2]" in line or "char *envp_init[MAX_INIT_ENVS+2]" in line:
-            lines[i] = "char * envp_init[MAX_INIT_ENVS+3] = { \"HOME=/\", \"TERM=linux\", \"LD_PRELOAD=/firmadyne/libnvram.so\", NULL,  };\n"
+        if (
+            "char * envp_init[MAX_INIT_ENVS+2]" in line
+            or "char *envp_init[MAX_INIT_ENVS+2]" in line
+        ):
+            lines[i] = (
+                'char * envp_init[MAX_INIT_ENVS+3] = { "HOME=/", "TERM=linux", "LD_PRELOAD=/firmadyne/libnvram.so", NULL,  };\n'
+            )
             index = i - 2
             for ln in template:
-                lines.insert(index,ln)
+                lines.insert(index, ln)
                 index += 1
     with open("init/main.c", "w") as f:
         f.writelines(lines)
 
 
-def apply_fdyne_hooks(kern_source,kernel):
+def apply_fdyne_hooks(kern_source, kernel):
     cwd = os.getcwd()
     os.chdir(kern_source)
-    
-    #find_cscope_files()
-    #create_cscope_db()
+
+    # find_cscope_files()
+    # create_cscope_db()
     touched_files = []
 
     fix_main()
@@ -685,24 +824,24 @@ def apply_fdyne_hooks(kern_source,kernel):
     ### For every function in the dictionary add
     ### the template to the kernel source
     ### Yes Cscope sucks thats why the sort and reverse
-    for key in sorted(list(hooks_dict.keys()),reverse=True):
+    for key in sorted(list(hooks_dict.keys()), reverse=True):
         data = hooks_dict[key]
-        
+
         ### If the length > 3 it means that there
         ### was a change to the function over the
         ### different kernel versions so we need
         ### to apply to apply the template to the
         ### correct function
-        what_to_search = key.replace("_old","")
+        what_to_search = key.replace("_old", "")
         tmplt = data[0]
         template = fix_template(tmplt)
 
         fl_to_modify = data[1]
         valid_kernels = data[2]
         tokens = valid_kernels.split(" ")
-        
-       # if fl_to_modify in touched_files:
-        #print("File",fl_to_modify,"is touched...applying cscope")
+
+        # if fl_to_modify in touched_files:
+        # print("File",fl_to_modify,"is touched...applying cscope")
         find_cscope_files(fl_to_modify)
         create_cscope_db()
 
@@ -712,19 +851,19 @@ def apply_fdyne_hooks(kern_source,kernel):
                 if kernel < tokens[1] and kernel not in data[4]:
                     continue
                 else:
-                   # print("here1")
+                    # print("here1")
                     what_to_search = data[3]
             if tokens[0] == "only_below":
                 if kernel >= tokens[1] and kernel not in data[4]:
                     continue
                 else:
-                  #  print("here2")
+                    #  print("here2")
                     what_to_search = data[3]
             if tokens[0] == "only_between":
                 if kernel < tokens[1] or kernel >= tokens[2] and kernel not in data[4]:
                     continue
                 else:
-                 #   print("here3")
+                    #   print("here3")
                     what_to_search = data[3]
             if tokens[0] == "below":
                 if kernel < tokens[1] or kernel in data[4]:
@@ -733,15 +872,15 @@ def apply_fdyne_hooks(kern_source,kernel):
                 if kernel >= tokens[1] or kernel in data[4]:
                     what_to_search = data[3]
             elif tokens[0] == "between":
-                #print("here2")
+                # print("here2")
                 min_k = tokens[1]
                 max_k = tokens[2]
                 if kernel >= min_k and kernel < max_k or kernel in data[4]:
                     what_to_search = data[3]
                 else:
                     continue
-            
-            modify_file(fl_to_modify, what_to_search, template,touched_files)
+
+            modify_file(fl_to_modify, what_to_search, template, touched_files)
             touched_files.append(fl_to_modify)
 
             continue
@@ -754,14 +893,9 @@ def apply_fdyne_hooks(kern_source,kernel):
             elif tokens[0] == "below":
                 if kernel >= tokens[1]:
                     continue
-        
-        modify_file(fl_to_modify, what_to_search, template,touched_files)
+
+        modify_file(fl_to_modify, what_to_search, template, touched_files)
         touched_files.append(fl_to_modify)
-    
+
     os.chdir(cwd)
     return
-
-
-
-        
-

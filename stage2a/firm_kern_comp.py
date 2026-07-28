@@ -253,11 +253,17 @@ def do_compile(
     if not ds_recovery:
         try:
             comp = subprocess.run(
-                ["make"] + base_flags + ["-j8"],
+                ["make"] + base_flags + [f"-j{os.cpu_count() or 1}"],
                 cwd=image_dir,
                 stderr=subprocess.PIPE,
                 stdout=subprocess.PIPE,
             )
+            
+            if comp.returncode != 0:
+                print("❌ MAKE BUILD FAILED WITH ERROR:")
+                print(comp.stderr[-2000:])  # Print the last 2000 characters of the error log
+                raise RuntimeError("Kernel build failed. See stdout/stderr above.")
+
             print("Done with the kernel compilation")
         except Exception as e:
             print("Error compiling {0}".format(kernel))

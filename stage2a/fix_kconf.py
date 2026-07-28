@@ -309,7 +309,7 @@ def _patch_kconfig_include_file(fpath: str) -> bool:
 
             # Option/test macros → boolean n
             if name in _OPTION_MACROS:
-                new_lines.append("{} {} n\n".format(name, op))
+                new_lines.append("{} {} y\n".format(name, op))
                 changed = True
                 if has_cont:
                     skip_continuations = True
@@ -605,6 +605,91 @@ def _valid(image_dir: str, rel_path: str, expected_token: str) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _fix_legacy_option_modules(image_dir: str) -> None:
+    """
+    Linux 6.x introduced a standalone 'modules' keyword in Kconfig.
+    - Native C kconfig (Linux 6.18) fails if changed to 'option modules'.
+    - Python kconfiglib crashes on standalone 'modules'.
+    Commenting it out allows both native 'make tinyconfig' and 'kconfiglib' to pass.
+    """
+    for dirpath, _, filenames in os.walk(image_dir):
+        for fn in filenames:
+            if fn == "Kconfig" or fn.startswith("Kconfig."):
+                fpath = os.path.join(dirpath, fn)
+                try:
+                    with open(fpath, "r", errors="replace") as f:
+                        content = f.read()
+                    # Comment out standalone 'modules' line
+                    updated = re.sub(
+                        r"(?m)^(\s*)modules\s*$", r"\1# [firmsolo-fix] modules", content
+                    )
+                    if updated != content:
+                        with open(fpath, "w") as f:
+                            f.write(updated)
+                except OSError:
+                    pass
+
+
+# Lovely little LTO Patch
+def _fix_llvm_toolchain_kconfig(image_dir: str) -> None:
+    """
+    FirmSolo's macro neutralization sets $(success,...) macro checks to 'n'.
+    This breaks CC_IS_CLANG, LD_IS_LLD, AS_IS_LLVM, and HAS_LTO_CLANG.
+    This function restores Clang/LLVM capability symbols so LTO options are selectable.
+    """
+    # 1. Force Clang/LLVM toolchain symbols in init/Kconfig
+    init_kconfig = os.path.join(image_dir, "init/Kconfig")
+    if os.path.exists(init_kconfig):
+        with open(init_kconfig, "r", errors="replace") as f:
+            content = f.read()
+
+        content = re.sub(
+            r"config CC_IS_CLANG\s*\n\s*def_bool\s+.*",
+            "config CC_IS_CLANG\n\tdef_bool y",
+            content,
+        )
+        content = re.sub(
+            r"config LD_IS_LLD\s*\n\s*def_bool\s+.*",
+            "config LD_IS_LLD\n\tdef_bool y",
+            content,
+        )
+        content = re.sub(
+            r"config AS_IS_LLVM\s*\n\s*def_bool\s+.*",
+            "config AS_IS_LLVM\n\tdef_bool y",
+            content,
+        )
+
+        with open(init_kconfig, "w") as f:
+            f.write(content)
+
+    # 2. Strip broken HAS_LTO_CLANG dependencies in arch/Kconfig
+    arch_kconfig = os.path.join(image_dir, "arch/Kconfig")
+    if os.path.exists(arch_kconfig):
+        with open(arch_kconfig, "r", errors="replace") as f:
+            content = f.read()
+
+        lines = content.splitlines()
+        in_has_lto = False
+        new_lines = []
+        for line in lines:
+            if line.strip().startswith("config HAS_LTO_CLANG"):
+                in_has_lto = True
+                new_lines.append(line)
+                continue
+            if in_has_lto:
+                if line.strip().startswith("config ") or line.strip().startswith(
+                    "choice"
+                ):
+                    in_has_lto = False
+                elif "NM" in line or "AR" in line or line.strip() == "depends on n":
+                    # Skip the neutralized toolchain checks
+                    continue
+            new_lines.append(line)
+
+        with open(arch_kconfig, "w") as f:
+            f.write("\n".join(new_lines) + "\n")
+
+
 def fix_configs(image_dir: str, kernel: str) -> None:
     """
     Apply all Kconfig-level fixes to the kernel tree.
@@ -628,9 +713,12 @@ def fix_configs(image_dir: str, kernel: str) -> None:
     # 1 – Kconfig.include: targeted static stubs
     _patch_kconfig_include_files(image_dir)
 
+    _fix_legacy_option_modules(image_dir)
+
     # 2 – All other Kconfig files: replace $(cc-option,…) / $(as-version) etc.
     #     Now also replaces $(call cc-option,…) via the updated engine.
     _neutralise_build_macros(image_dir)
+    _fix_llvm_toolchain_kconfig(image_dir)
 
     # 3 – Post-processing sanitiser: comment out any remaining invalid lines
     _sanitize_kconfig_files(image_dir)

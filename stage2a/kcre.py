@@ -8,6 +8,7 @@ import shutil
 import sys
 import subprocess
 from typing import Dict, List, Optional
+import kconfiglib
 from kconfiglib import (
     Kconfig,
     Symbol,
@@ -18,6 +19,8 @@ from kconfiglib import (
     STRING,
     BOOL,
     TRISTATE,
+    INT,
+    UNKNOWN,
     HEX,
     AND,
     OR,
@@ -554,6 +557,61 @@ class Image:
         self.kconf.syms[option].set_value(value)
         print("New value of option", option, " is", self.kconf.syms[option].tri_value)
 
+    def fulfill_dep(self, expr, value=2):
+        """Recursively satisfy a kconfiglib dependency expression tree."""
+        # Dependencies are always tristates (0, 1, 2)
+        if not isinstance(value, int):
+            value = 2
+
+        if expr is self.kconf.y or expr is self.kconf.n:
+            return
+
+        # Base case: symbol or choice object
+        if isinstance(expr, (Symbol, Choice)):
+            if expr.name and expr.tri_value < value:
+                self.set_option(expr.name, value)
+            return
+
+        if not isinstance(expr, tuple):
+            return
+
+        op = expr[0]
+
+        # AND: both left and right sides must be satisfied
+        if op == AND:
+            self.fulfill_dep(expr[1], value)
+            self.fulfill_dep(expr[2], value)
+
+        # OR: satisfy left side first; if expression is still unsatisfied, satisfy right side
+        elif op == OR:
+            if expr_value(expr[1]) < value:
+                self.fulfill_dep(expr[1], value)
+            if expr_value(expr) < value:
+                self.fulfill_dep(expr[2], value)
+
+        # NOT: subexpression must be forced to n (0)
+        elif op == NOT:
+            sub = expr[1]
+            if isinstance(sub, (Symbol, Choice)) and sub.name:
+                self.set_option(sub.name, 0)
+            elif isinstance(sub, tuple):
+                if sub[0] == EQUAL:
+                    if expr_str(sub[2]) in ('"n"', 'n'):
+                        self.fulfill_dep(sub[1], 2)
+                    elif expr_str(sub[2]) in ('"y"', 'y'):
+                        self.fulfill_dep(sub[1], 0)
+                elif sub[0] == NOT:
+                    self.fulfill_dep(sub[1], value)
+
+        # EQUAL / UNEQUAL comparisons
+        elif op in (EQUAL, UNEQUAL):
+            left, right = expr[1], expr[2]
+            right_str = str(getattr(right, 'str_value', expr_str(right)))
+            if isinstance(left, (Symbol, Choice)) and left.name:
+                target_bool = (op == EQUAL and right_str in ('"y"', 'y')) or \
+                              (op == UNEQUAL and right_str in ('"n"', 'n'))
+                self.set_option(left.name, 2 if target_bool else 0) 
+
     def set_option(self, conf_opt, value, overwrite=False):
         conf_opt = conf_opt.replace("subst m,y,$(", "").strip("+=")
         option = (
@@ -570,78 +628,76 @@ class Image:
         ):
             self.set_option_value("NF_CONNTRACK_ENABLED", 2, overwrite)
 
-        print("Setting Option", option, conf_opt, "to value", value)
+        print("Setting Option", option, conf_opt, "to value", repr(value))
 
         try:
             sym = self.kconf.syms[option]
-        except Exception:
+        except KeyError:
             print("Conf option", option, "does not exist in the tree")
             return
 
-        if isinstance(sym, (Symbol, Choice)):
-            print(
-                "Symbol:",
-                sym.name,
-                "Is assignable:",
-                sym.assignable,
-                "Is visible:",
-                sym.visibility,
-                "Dependency:",
-                expr_str(sym.direct_dep),
-            )
-            if sym.tri_value == value:
-                print("SYMBOL", sym.name, "already has value", value)
-                return
-            if value == 0:
-                self.set_option_value(sym.name, 0)
-                return
-            if value not in range(0, 4):
-                self.set_option_value(sym.name, value)
-                return
-            if sym.type == BOOL and value == 1:
-                print("Type of symbol", sym.name, "is bool, cannot be set to 1")
-                return
+        if not isinstance(sym, (Symbol, Choice)):
+            return
 
-            if value in sym.assignable:
-                print("The value {} can be set directly for {}".format(value, option))
-                self.set_option_value(sym.name, value, overwrite)
-                print(
-                    "Config string for {} is {} visibility {}".format(
-                        sym.name, sym.config_string, sym.visibility
-                    )
-                )
+        # -------------------------------------------------------------
+        # Branch A: Handle STRING / INT / HEX Kconfig option types
+        # -------------------------------------------------------------
+        if sym.type in (STRING, INT, HEX):
+            if sym.str_value == str(value):
                 return
+            if sym.direct_dep is not self.kconf.y:
+                self.fulfill_dep(sym.direct_dep, 2)
+            for node in sym.nodes:
+                if node.prompt and node.prompt[1] is not self.kconf.y:
+                    self.fulfill_dep(node.prompt[1], 2)
+            self.set_option_value(sym.name, str(value), overwrite)
+            return
 
-            self._split_expr_info(sym, sym.direct_dep)
-            print(
-                "Dependencies of {} have value {}".format(
-                    sym.name, expr_value(sym.direct_dep)
-                )
-            )
+        # -------------------------------------------------------------
+        # Branch B: Handle BOOL / TRISTATE Kconfig option types
+        # -------------------------------------------------------------
+        if sym.tri_value == value:
+            print("SYMBOL", sym.name, "already has value", value)
+            return
+        if value == 0:
+            self.set_option_value(sym.name, 0, overwrite)
+            return
 
-            if sym.visibility == 0:
-                print("Still not visible...trying reverse deps for", sym.name)
-                self.set_undefined_option(sym, value, overwrite)
-                
-                # Dynamic Engine Fix:
-                # If reverse deps (select) didn't set it, but its direct dependencies 
-                # (direct_dep) are satisfied, set the unprompted symbol directly.
-                if sym.tri_value != value and expr_value(sym.direct_dep) > 0:
-                    print("Direct deps met for unprompted symbol {}, forcing value {}".format(sym.name, value))
-                    self.set_option_value(sym.name, value, overwrite)
-            else:
-                self.set_option_value(sym.name, min(value, sym.visibility), overwrite)
-            print(
-                "Config string for {} is {} visibility {} assignable {}".format(
-                    sym.name, sym.config_string, sym.visibility, sym.assignable
-                )
-            )
+        # Step 1: Check if assignable immediately
+        if value in sym.assignable:
+            self.set_option_value(sym.name, value, overwrite)
+            return
 
-            if sym.choice:
-                parent = sym.choice
-                for s in parent.syms:
-                    if s is not parent.user_selection and s.visibility:
-                        self.set_option_value(s.name, 0, overwrite)
+        # Step 2: Satisfy direct dependencies
+        if sym.direct_dep is not self.kconf.y:
+            print("Resolving direct_dep for", sym.name, ":", expr_str(sym.direct_dep))
+            self.fulfill_dep(sym.direct_dep, 2)
+
+        # Step 3: Satisfy prompt conditions via sym.nodes (e.g. "if EXPERT")
+        for node in sym.nodes:
+            if node.prompt and node.prompt[1] is not self.kconf.y:
+                print("Resolving prompt condition for", sym.name, ":", expr_str(node.prompt[1]))
+                self.fulfill_dep(node.prompt[1], 2)
+
+        # Step 4: Check assignability after enabling parent dependencies and prompt conditions
+        if value in sym.assignable:
+            self.set_option_value(sym.name, value, overwrite)
+            return
+
+        # Step 5: Handle promptless / invisible symbols
+        if expr_value(sym.direct_dep) >= (value if isinstance(value, int) else 2) or expr_value(sym.direct_dep) > 0:
+            print("Direct deps met for unprompted symbol {}, forcing value {}".format(sym.name, value))
+            self.set_option_value(sym.name, value, overwrite)
+        else:
+            # Step 6: Fall back to reverse dependencies (select)
+            print("Direct deps failed for {}, trying reverse deps".format(sym.name))
+            self.set_undefined_option(sym, value, overwrite)
+
+        if sym.choice:
+            parent = sym.choice
+            for s in parent.syms:
+                if s is not parent.user_selection and s.visibility:
+                    self.set_option_value(s.name, 0, overwrite)
 
     def set_undefined_option(self, opt, value, overwrite=False):
         if (opt.type != TRISTATE and value == 1) or opt.name not in self.kconf.syms:

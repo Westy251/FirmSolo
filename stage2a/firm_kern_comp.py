@@ -369,21 +369,22 @@ def do_compile(
 
 
 def find_and_cscope(image_dir: str, arch: str) -> None:
-    """Build the cscope index for the kernel tree."""
+    """Build a clean, reliable cscope index for the kernel tree."""
     cwd = os.getcwd()
-
     sa = _srcarch(arch)
-
-    find_cmd = (
-        'find . -path "./arch/*" ! -path "./arch/{sa}*" -prune '
-        '-o -path "./Documentation*" -prune '
-        '-o -name "Makefile" -print >./cscope.files'
-    ).format(sa=sa)
 
     try:
         os.chdir(image_dir)
-        os.system(find_cmd)
 
+        # 1. Clean up stale/old cscope database files to prevent "-q mismatch" errors
+        for db_file in ["cscope.out", "cscope.in.out", "cscope.po.out", "cscope.files"]:
+            if os.path.exists(db_file):
+                try:
+                    os.remove(db_file)
+                except OSError:
+                    pass
+
+        # 2. Preserve your Kconfig swap logic
         kconfig_real = os.path.join(image_dir.rstrip("/"), "Kconfig")
         kconfig_backup = kconfig_real + ".firmsolo_bak"
 
@@ -396,22 +397,31 @@ def find_and_cscope(image_dir: str, arch: str) -> None:
             os.system("rm -f Kconfig")
             os.system("cp {} Kconfig".format(arch_kconfig))
         else:
-            print(
-                "  find_and_cscope: arch Kconfig not found at {}".format(arch_kconfig)
-            )
+            print("  find_and_cscope: arch Kconfig not found at {}".format(arch_kconfig))
 
-        try:
-            subprocess.run(["cscope", "-b", "-q"], cwd=image_dir)
-        except Exception:
-            print("Cscope failed")
+        # 3. Build cscope database cleanly using kernel's tags.sh
+        print("  find_and_cscope: indexing C source tree via tags.sh (ARCH={})...".format(sa))
+        env = os.environ.copy()
+        env["ARCH"] = sa
 
+        subprocess.run(
+            ["./scripts/tags.sh", "cscope"],
+            cwd=image_dir,
+            env=env,
+            check=True,
+            stderr=subprocess.DEVNULL  # Silences harmless arch glob warnings
+        )
+        print("  find_and_cscope: cscope index built successfully.")
+
+        # 4. Restore original Kconfig
         if os.path.exists(kconfig_backup):
             shutil.move(kconfig_backup, kconfig_real)
             print("  find_and_cscope: restored real top-level Kconfig")
 
+    except Exception as e:
+        print("Cscope failed:", e)
     finally:
         os.chdir(cwd)
-
 
 def copy_files(
     image_dir: str, new_kern_dir: str, s_config: str, arch: str = "arm"
@@ -614,6 +624,7 @@ def compile_kernel(
                 module_options,
                 ds_options,
             )
+            print("DEBUG ds_options from symbolz translation:", ds_options)
         except Exception:
             print(traceback.format_exc())
 

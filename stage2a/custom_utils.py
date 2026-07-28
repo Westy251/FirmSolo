@@ -1,245 +1,257 @@
+#!/usr/bin/env python3
+"""
+custom_utils.py – shared paths and helpers for FirmSolo.
+Python 3.7+ compatible (uses typing module, no X|Y union syntax).
+"""
+
+from __future__ import annotations
+
 import os
-import sys
+import json
 import pickle
-import getpass
-import subprocess
-import traceback as tb
-from collections import defaultdict
+import platform
+import shutil
+from typing import Dict, List, Optional
 
-user = getpass.getuser()
-hostname = os.uname()[1]
-############### Absolute Paths ######################
-
-#Change this path to your experiment directory
-abs_path = "/output/"
-# Change this path where FirmSolo is installed
-script_dir =  "/FirmSolo/"
-# Change this to where Ghidra is installed
-ghidra_dir = "/ghidra/ghidra_10.2.3_PUBLIC/"
-# Change this to where TriforceLinuxSyscallFuzzer is installed
-tafl_lsf_dir = "/TriforceLinuxSyscallFuzzer/"
-#Change this to where TriforceAFL is installed
-tafl_dir = "/TriforceAFL/"
-
-
-#Change this based on your machine threads
-num_of_threads = 4
-
-img_info_path = abs_path + "Image_Info/"
-
-loaded_mods_path = abs_path + "Loaded_Modules/"
-
-container_data_path = abs_path + "Data/"
-
-exploit_dir = abs_path + "Exploits/"
-
-result_dir_path = abs_path + "results/"
-
-log_path = abs_path + "logs/"
-
-fdyne_data = script_dir + "firmadyne_data/"
-
-openwrt_patch_dir = script_dir + "openwrt_patches/"
-
+# ── Directory layout ──────────────────────────────────────────────────────────
 kernel_prefix = "linux-"
+result_dir_path = os.environ.get("FIRMSOLO_RESULT_DIR", "/output/results/")
+kern_dir = os.environ.get("FIRMSOLO_KERN_DIR", "/output/kernel_dirs/")
+tar_dir = os.environ.get("FIRMSOLO_TAR_DIR", "/output/kernel_tars/")
+openwrt_patch_dir = os.environ.get("FIRMSOLO_PATCH_DIR", "/FirmSolo/openwrt_patches/")
+kernel_configs_dir = os.environ.get("FIRMSOLO_CONFIG_DIR", "/FirmSolo/kernel_configs/")
+image_db_path = os.environ.get("FIRMSOLO_IMAGE_DB", "/FirmSolo/image_db.json")
+scripts_dir = os.environ.get("FIRMSOLO_SCRIPTS_DIR", "/output/scripts/compile_scripts/")
 
-kern_dir = abs_path + "kernel_dirs/"
-kern_sources = abs_path + "/kernel_sources/"
-
-### The dictionaries are used to cache information about the 
-### symbols exported/implemented by the kernels
-kern_dicts = abs_path + "kernel_dicts/"
-ksyms_dir = abs_path + "kernel_ksyms_confs/"
-
-tar_dir = abs_path + "kernel_tars/"
-
-fs_dir = abs_path + "Filesystems/"
-
-extracted_fs_and_kern_dir = abs_path + "images/"
-
-kernel_configs = script_dir + "kernel_configs/"
-
-buildroot_fs_dir = script_dir + "buildroot_fs/"
-#####################################################
-
-################## Useful Methods ###################
-
-# Read the lines from a file
-def read_file(file_path):
-    with open(file_path,"r",errors="ignore") as f:
-        lines = f.readlines()
-
-    #lines = lines.replace("\n\n\n","").split("\n")
-    
-    # Remove the new line
-    result = list(map(lambda x:x.strip("\n").rstrip(), lines))
-    
-    return result
-
-# Read the lines from a file with carriage return
-def read_file_cr(file_path):
-    with open(file_path,"r",errors="ignore") as f:
-        lines = f.read()
-
-    lines = lines.replace("\n\n\n","").split("\n")
-    
-    # Remove the new line
-    result = list(map(lambda x:x.strip("\n").rstrip(), lines))
-    
-    return result
-
-# Write a file
-def write_file(file_path,lines, mode):
-    with open(file_path,mode) as f:
-        f.writelines(lines)
+# ── SRCARCH mapping (mirrors kernel top-level Makefile) ──────────────────────
+_SRCARCH_MAP: Dict[str, str] = {
+    "x86_64": "x86",
+    "i386": "x86",
+    "sparc64": "sparc",
+    "sparc32": "sparc",
+    "sh64": "sh",
+    "tilegx": "tile",
+    "tilepro": "tile",
+}
 
 
-# Read a pickle file
-def read_pickle(file_path):
-    with open(file_path, "rb") as f:
-        result = pickle.load(f)
-
-    return result
-# Read a pickle file
-def multi_read_pickle(file_path, how_many):
-    result = []
-    with open(file_path, "rb") as f:
-        for i in range(how_many-1):
-            temp = pickle.load(f)
-            result.append(temp)
-
-    return result
+def srcarch(arch: str) -> str:
+    """Return the kernel SRCARCH value for a given ARCH string."""
+    return _SRCARCH_MAP.get(arch, arch)
 
 
-#Write a pickle object to a file
-def write_pickle(file_path,obj):
-    sys.setrecursionlimit(200000)
-    with open(file_path,"wb") as f:
-        pickle.dump(obj,f)
+# ── LLVM / toolchain helpers ──────────────────────────────────────────────────
 
-def multi_write_pickle(file_path,obj):
-    sys.setrecursionlimit(200000)
-    with open(file_path,"wb") as f:
-        for objct in obj:
-            pickle.dump(obj,f)
 
-def check_if_numeric(inpt):
-    if inpt.isnumeric():
-        return True
-    else:
+def _which_gcc(prefix: str) -> Optional[str]:
+    """Return the full path to <prefix>gcc if on PATH, else None."""
+    return shutil.which(prefix + "gcc")
+
+
+def is_llvm_available() -> bool:
+    """True when both clang and ld.lld are on PATH."""
+    return shutil.which("clang") is not None and shutil.which("ld.lld") is not None
+
+
+def use_llvm_for_kernel(kernel: str) -> bool:
+    """
+    Use LLVM=1 (clang + lld) when:
+      * kernel >= linux-5.0  (stable Clang support landed here)
+      * clang and ld.lld are both on PATH
+    """
+    if not is_llvm_available():
         return False
+    return kernel >= "linux-5.0"
 
-def get_image_info(image,which_info):
-    # The pickle object containing the image data
-    pkl_obj = img_info_path + image + ".pkl"
-    
-    info = read_pickle(pkl_obj)
 
-    out = []
-    if which_info == "all":
-        return info
-    else:
-        for i in which_info:
-            out.append(info[i])
-        return out
+def get_toolchain(kernel: str, arch: str, endianess: str) -> str:
+    """
+    Return the CROSS_COMPILE prefix for the target arch.
 
-def save_image_info(image, info):
-    pkl_obj = img_info_path + image + ".pkl"
+    For x86_64 native builds with LLVM available, returns "" because
+    LLVM=1 is used and no cross-compiler prefix is needed.
+    For ARM / MIPS returns the first matching GCC cross-compiler on PATH.
+    """
+    big = endianess in ("big endian", "big", "BE")
 
-    write_pickle(pkl_obj, info)
+    # ── x86 native build ─────────────────────────────────────────────────────
+    if arch in ("x86_64", "x86", "i386"):
+        host = platform.machine()
+        if host in ("x86_64", "i686", "i386"):
+            if use_llvm_for_kernel(kernel):
+                return ""  # LLVM=1 handles everything; no prefix needed
+        candidates: List[str] = ["x86_64-linux-gnu-", "x86_64-linux-musl-"]
 
-def get_vendor(image,arch,ds_recovery,new_kern_dir,*args):
-    if ds_recovery:
-        defconfig = "{}/.config".format(new_kern_dir)
-        return defconfig
-
-    if arch == "mips":
-        defconfig = "{}/config.malta".format(kernel_configs)
+    # ── ARM ───────────────────────────────────────────────────────────────────
     elif arch == "arm":
-        print("ARGS",args[0])
-        if args[0] == "armv5":
-            ### Versatile board
-            defconfig = "{}/config.arm_versatile".format(kernel_configs)
-        elif args[0] == "armv6":
-            defconfig = "{}/config.arm_realview_v6".format(kernel_configs)
-        else:
-            defconfig = "{}/config.arm_realview_v7".format(kernel_configs)
-            
+        candidates = (
+            ["armeb-linux-gnueabi-", "arm-linux-gnueabi-"]
+            if big
+            else ["arm-linux-gnueabi-", "arm-linux-gnueabihf-"]
+        )
 
-    return defconfig
+    # ── MIPS ──────────────────────────────────────────────────────────────────
+    elif arch == "mips":
+        candidates = (
+            ["mips-linux-gnu-", "mips-buildroot-linux-gnu-"]
+            if big
+            else ["mipsel-linux-gnu-", "mipsel-buildroot-linux-gnu-"]
+        )
 
-def get_toolchain(kernel, arch, endian):
-    if arch == "mips":
-        if kernel < "linux-2.6.23":
-            if endian == "big endian":
-                cross = "/opt/mips_gcc-3.4/usr/bin/mips-linux-gnu-"
-            else:
-                cross = "/opt/mipsel_gcc-3.4/usr/bin/mipsel-linux-gnu-"
-        elif kernel < "linux-4.4.198":
-            if endian == "big endian":
-                cross = "/opt/mips_gcc-4.3/usr/bin/mips-linux-gnu-"
-            else:
-                cross = "/opt/mipsel_gcc-4.3/usr/bin/mipsel-linux-gnu-"
-        ### GCC 5.5 installed on /usr
-        else:
-            if endian == "big endian":
-                cross = "mips-linux-gnu-"
-            else:
-                cross = "mipsel-linux-gnu-"
-    elif arch == "arm":
-        cross = "/opt/arm_gcc-4.3/usr/bin/arm-linux-gnueabi-"
+    # ── AArch64 ───────────────────────────────────────────────────────────────
+    elif arch in ("arm64", "aarch64"):
+        candidates = ["aarch64-linux-gnu-", "aarch64-unknown-linux-gnu-"]
+
     else:
-        cross = None
+        candidates = ["{}-linux-gnu-".format(arch)]
 
-    return cross
+    for prefix in candidates:
+        if _which_gcc(prefix):
+            return prefix
 
-def create_dict(elems):
-    out = {}
-
-    for elem in elems:
-        key = elem.split("/")[-1].strip("\n")
-        out[key] = elem.strip("\n")
-
-    return out
-def create_dict_key_vals(keys,values):
-    out = {}
-    for i,key in enumerate(keys):
-        out[key] = values[i]
-
-    return out
+    # Return first candidate even when not installed; LLVM builds ignore it
+    return candidates[0]
 
 
-def clean_kernel_source(kernel,container, arch):
-    ### Clean kernel source directory
+def get_cc_for_kconfig(arch: str, cross: str) -> str:
+    """
+    Best available CC for kconfiglib $(cc-option,...) probe macros.
+
+    Priority: cross-GCC → clang → host GCC → 'cc'.
+    On Alpine with only clang, arch-specific flags return 'n' which is the
+    correct conservative default for a cross-build probe.
+    """
+    if cross:
+        found = shutil.which(cross + "gcc")
+        if found:
+            return found
+    for cand in ("clang", "gcc", "cc"):
+        found = shutil.which(cand)
+        if found:
+            return found
+    return "cc"
+
+
+# ── Defconfig resolution ──────────────────────────────────────────────────────
+# String values that end in _defconfig are treated as built-in make targets
+# (i.e.  make ARCH=x86_64 x86_64_defconfig) rather than file paths.
+
+DEFCONFIGS: Dict[str, str] = {
+    "mips": kernel_configs_dir + "config.mips_malta",
+    "armv5": kernel_configs_dir + "config.arm_versatile_v5",
+    "armv6": kernel_configs_dir + "config.arm_realview_v6",
+    "armv7": kernel_configs_dir + "config.arm_realview_v7",
+    # x86_64: use the kernel's built-in make target
+    "x86_64": "x86_64_defconfig",
+    "x86": "x86_64_defconfig",
+}
+
+
+def get_vendor(
+    image: str,
+    arch: str,
+    ds_recovery: int,
+    new_kern_dir: str,
+    arm_type: Optional[str] = None,
+) -> str:
+    """Return the defconfig path (or make-target name) for arch/variant."""
+    if arch == "mips":
+        conf = DEFCONFIGS.get("mips", kernel_configs_dir + "config.mips_malta")
+        print("ARGS mips")
+    elif arch in ("x86_64", "x86", "i386"):
+        conf = DEFCONFIGS.get("x86_64", "x86_64_defconfig")
+        print("ARGS x86_64")
+    elif arch == "arm":
+        key = (arm_type or "armv7").lower()
+        conf = DEFCONFIGS.get(key, DEFCONFIGS["armv7"])
+        print("ARGS", arm_type if arm_type else "armv7")
+    else:
+        conf = kernel_configs_dir + "config.{}".format(arch)
+        print("ARGS", arch)
+    return conf
+
+
+# ── Image metadata ────────────────────────────────────────────────────────────
+
+
+def get_image_info(image: str, which_info: List[str]) -> list:
+    """Load per-image metadata from image_db.json."""
     try:
-        if container == "ubuntu":
-            image_dir = kern_dir + kernel
-        else:
-            image_dir = kern_dir2 + kernel
-        
-        if arch == "mips":
-            mrproper = subprocess.run(['make','mrproper','ARCH=arm'],\
-                    cwd=image_dir,stderr=subprocess.PIPE,stdout=subprocess.PIPE)
-            print("Cleaning kernel source")
-            print(mrproper.stdout.decode("utf-8"))
-            
-            mrproper = subprocess.run(['make','mrproper','ARCH=mips'],\
-                    cwd=image_dir,stderr=subprocess.PIPE,stdout=subprocess.PIPE)
-            print("Cleaning kernel source")
-            print(mrproper.stdout.decode("utf-8"))
-        elif arch == "arm":
-            mrproper = subprocess.run(['make','mrproper','ARCH=mips'],\
-                    cwd=image_dir,stderr=subprocess.PIPE,stdout=subprocess.PIPE)
-            print("Cleaning kernel source")
-            print(mrproper.stdout.decode("utf-8"))
-            
-            mrproper = subprocess.run(['make','mrproper','ARCH=arm'],\
-                    cwd=image_dir,stderr=subprocess.PIPE,stdout=subprocess.PIPE)
-            print("Cleaning kernel source")
-            print(mrproper.stdout.decode("utf-8"))
-    except:
-        print(tb.format_exc())
-        print("Something went wrong with cleaning the kernel")
+        with open(image_db_path, "r") as f:
+            db = json.load(f)
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            "Image database not found at '{}'. "
+            "Set FIRMSOLO_IMAGE_DB env var to override.".format(image_db_path)
+        )
+    if image not in db:
+        raise KeyError("Image '{}' not found in database.".format(image))
+    entry = db[image]
+    return [entry.get(k) for k in which_info]
 
 
-#####################################################
+# ── Misc helpers ──────────────────────────────────────────────────────────────
+
+
+def read_file(filepath: str) -> List[str]:
+    """Return non-empty stripped lines from a text file."""
+    lines: List[str] = []
+    try:
+        with open(filepath, "r") as f:
+            for line in f:
+                s = line.strip()
+                if s:
+                    lines.append(s)
+    except FileNotFoundError:
+        print("File not found: {}".format(filepath))
+    return lines
+
+
+def write_pickle(path: str, data: object) -> None:
+    with open(path, "wb") as f:
+        pickle.dump(data, f)
+
+
+# ── Smoke-test ────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import sys as _sys
+
+    print("kernel_prefix      :", kernel_prefix)
+    print("kern_dir           :", kern_dir)
+    print("is_llvm_available  :", is_llvm_available())
+
+    for _k in ("linux-6.18", "linux-4.19", "linux-3.10"):
+        print("use_llvm({:<14}) :".format(_k + ")"), use_llvm_for_kernel(_k))
+
+    for _arch in ("x86_64", "arm", "mips"):
+        _cross = get_toolchain("linux-6.18", _arch, "little")
+        print("toolchain {:8s}  : '{}'".format(_arch, _cross))
+
+    print("srcarch x86_64     :", srcarch("x86_64"))
+    print("srcarch arm        :", srcarch("arm"))
+    print("get_vendor x86_64  :", get_vendor("img", "x86_64", 0, "/tmp/"))
+    print("get_vendor armv7   :", get_vendor("img", "arm", 0, "/tmp/", "armv7"))
+
+    required = [
+        "kernel_prefix",
+        "result_dir_path",
+        "kern_dir",
+        "tar_dir",
+        "scripts_dir",
+        "is_llvm_available",
+        "use_llvm_for_kernel",
+        "get_toolchain",
+        "get_cc_for_kconfig",
+        "srcarch",
+        "get_vendor",
+        "get_image_info",
+        "read_file",
+        "write_pickle",
+        "DEFCONFIGS",
+    ]
+    this = _sys.modules[__name__]
+    missing = [n for n in required if not hasattr(this, n)]
+    if missing:
+        print("MISSING:", missing)
+        _sys.exit(1)
+    print("All required symbols present — OK")

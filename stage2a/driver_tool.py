@@ -1,35 +1,80 @@
+#!/usr/bin/env python3
+"""
+driver_tool.py – generate a minimal x86_64 Linux kernel .config for a
+set of specified CONFIG symbols.
+
+Usage (after running alpine_setup.sh once):
+  python3 stage2a/driver_tool.py
+
+Prerequisites:
+  /output/kernel_tars/linux-6.18.tar.gz   – kernel source tarball
+  clang + ld.lld on PATH                  – installed by alpine_setup.sh
+  binutils 'as' on PATH                   – for $(as-version) probes
+"""
+
+from __future__ import annotations
+
 import os
+import sys
+import shutil
+
+currentdir = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, currentdir)
+
 import custom_utils as cu
-from firm_kern_comp import (
-    compile_kernel,
-)  # Or import functions directly if in same file
+from firm_kern_comp import compile_kernel
 
-# 1. Define your target platform manually (bypassing cu.get_image_info)
-kernel_version = "6.18"  # Version string (e.g., linux-3.10.14)
-arch = "arm"  # Architecture: "arm" or "mips"
-endianness = "little"  # "little" or "big"
-cross_compiler = "arm-linux-gnueabi-"  # Cross-compiler prefix
-ver_magicz = ["ARMv7", "p2v8"]  # Target vermagic flags
 
-# 2. Specify the top-level CONFIG options or functions you need enabled
-# KCRE will automatically resolve all parent/prerequisite dependencies for these!
-conf_opts = ["CONFIG_SECURITY", "CONFIG_FS_POSIX_ACL"]
-symbolz = ["generic_permission"]  # Target functions to satisfy
+# ── Target platform ───────────────────────────────────────────────────────────
+kernel_version = "6.18"
+arch = "x86_64"  # CHANGED from arm – build/analyse x86_64 kernel
+endianess = "little"
+# ver_magicz: empty for x86_64 – platform settings come from x86_64_defconfig.
+# (For ARM/MIPS firmware analysis this would contain e.g. ["ARMv7", "p2v8"])
+ver_magicz: list = []
 
-# 3. Dummy or empty fallback structures
+# ── Toolchain ─────────────────────────────────────────────────────────────────
+cross_compiler = cu.get_toolchain(cu.kernel_prefix + kernel_version, arch, endianess)
+_using_llvm = cu.use_llvm_for_kernel(cu.kernel_prefix + kernel_version)
+
+print("=" * 60)
+print("  Kernel    : linux-{}".format(kernel_version))
+print("  Arch      : {} ({}-endian)".format(arch, endianess))
+if _using_llvm:
+    print(
+        "  Toolchain : Clang/LLVM (LLVM=1)  [clang={}]".format(
+            shutil.which("clang") or "not found"
+        )
+    )
+else:
+    gcc = shutil.which((cross_compiler or "") + "gcc") or "(not found)"
+    print("  Toolchain : GCC  CROSS_COMPILE={}  [{}]".format(cross_compiler, gcc))
+print("  SRCARCH   : {}".format(cu.srcarch(arch)))
+print("=" * 60)
+
+# ── Symbols / CONFIG options to enable ───────────────────────────────────────
+# KCRE automatically resolves all upstream Kconfig dependencies.
+conf_opts = [
+    "CONFIG_SECURITY",
+    "CONFIG_FS_POSIX_ACL",
+    "CONFIG_LTO_CLANG_FULL",
+    "CONFIG_GNSS",
+]
+symbolz = ["generic_permission"]
+
+# ── Plumbing ──────────────────────────────────────────────────────────────────
 image_id = "custom_build"
-modulez = []  # List of .ko paths if you have any
-module_options = []
-guard_expr = []
-ds_options = []
+modulez: list = []
+module_options: list = []
+guard_expr: list = []
+ds_options: list = []
 extraversion = ""
 ds_recovery = 0
 single_module_dir = ""
 s_config = "yes"
 openwrt = False
-endianess = "little"
 
-# 4. Invoke the compilation pipeline!
+# ── Launch ────────────────────────────────────────────────────────────────────
 compile_kernel(
     image_id,
     ds_options,

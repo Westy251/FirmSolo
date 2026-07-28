@@ -19,6 +19,8 @@ import sys
 import shutil
 
 currentdir = os.path.dirname(os.path.realpath(__file__))
+os.environ["KCFLAGS"] = "-flto=full -ffat-lto-objects -fexperimental-call-graph-section"
+os.environ["MAKEFLAGS"] = f"-j{os.cpu_count() or 1}"
 sys.path.insert(0, currentdir)
 
 import custom_utils as cu
@@ -55,12 +57,13 @@ print("=" * 60)
 # ── Symbols / CONFIG options to enable ───────────────────────────────────────
 # KCRE automatically resolves all upstream Kconfig dependencies.
 conf_opts = [
-    "CONFIG_SECURITY",
-    "CONFIG_FS_POSIX_ACL",
     "CONFIG_LTO_CLANG_FULL",
-    "CONFIG_GNSS",
+    "CONFIG_LD_DEAD_CODE_DATA_ELIMINATION",  # Prunes unused functions at link time
+    "CONFIG_CC_OPTIMIZE_FOR_SIZE",
+    "CONFIG_LD_DEAD_CODE_DATA_ELIMINATION",  # Prunes unused functions at link time
+    "CONFIG_CC_OPTIMIZE_FOR_SIZE",
 ]
-symbolz = ["generic_permission"]
+symbolz = ["generic_permission", "security_inode_init_security"]
 
 # ── Plumbing ──────────────────────────────────────────────────────────────────
 image_id = "custom_build"

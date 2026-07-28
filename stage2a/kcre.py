@@ -622,9 +622,15 @@ class Image:
             if sym.visibility == 0:
                 print("Still not visible...trying reverse deps for", sym.name)
                 self.set_undefined_option(sym, value, overwrite)
+                
+                # Dynamic Engine Fix:
+                # If reverse deps (select) didn't set it, but its direct dependencies 
+                # (direct_dep) are satisfied, set the unprompted symbol directly.
+                if sym.tri_value != value and expr_value(sym.direct_dep) > 0:
+                    print("Direct deps met for unprompted symbol {}, forcing value {}".format(sym.name, value))
+                    self.set_option_value(sym.name, value, overwrite)
             else:
                 self.set_option_value(sym.name, min(value, sym.visibility), overwrite)
-
             print(
                 "Config string for {} is {} visibility {} assignable {}".format(
                     sym.name, sym.config_string, sym.visibility, sym.assignable

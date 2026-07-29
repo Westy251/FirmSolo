@@ -22,7 +22,7 @@ import argparse as argp
 import traceback
 from firmadyne_fix import apply_fdyne_hooks
 import time as tm
-
+import re
 
 # ── SRCARCH mapping ───────────────────────────────────────────────────────────
 _SRCARCH_MAP: Dict[str, str] = {
@@ -368,15 +368,95 @@ def do_compile(
     print("Changed Directory back to ", cwd)
 
 
+def resolve_symbols_to_configs(image_dir: str, symbols: List[str]) -> List[str]:
+    found_configs = set()
+    cscope_db = os.path.join(image_dir, "cscope.out")
+
+    if not symbols:
+        return []
+
+    if not os.path.exists(cscope_db):
+        print(f"  [resolve_symbols] Error: {cscope_db} not found.")
+        return []
+
+    for sym in symbols:
+        if not sym:
+            continue
+            
+        clean_sym = re.sub(r"\.(isra|constprop|part)\.\d+", "", sym).strip()
+        defined_files = set()
+
+        # Query cscope using -L1 (definitions) and -L0 (symbol references)
+        for flag in ["-L1", "-L0"]:
+            try:
+                res = subprocess.run(
+                    ["cscope", "-d", "-f", cscope_db, flag, clean_sym],
+                    cwd=image_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for line in res.stdout.strip().splitlines():
+                    parts = line.split()
+                    if parts:
+                        abs_or_rel = parts[0]
+                        # Convert absolute paths to relative paths against image_dir
+                        rel_file = os.path.relpath(abs_or_rel, image_dir)
+                        if rel_file.endswith((".c", ".h", ".S")):
+                            defined_files.add(rel_file)
+                if defined_files:
+                    break
+            except Exception as e:
+                print(f"  [cscope] Query error for '{clean_sym}': {e}")
+
+        for rel_file in defined_files:
+            dirname = os.path.dirname(rel_file)
+            filename = os.path.basename(rel_file)
+            obj_name = os.path.splitext(filename)[0] + ".o"
+
+            makefile_path = os.path.join(image_dir, dirname, "Makefile")
+            if not os.path.exists(makefile_path):
+                continue
+
+            try:
+                with open(makefile_path, "r", errors="replace") as mf:
+                    makefile_content = mf.read()
+
+                # Case A: Direct hit (obj-$(CONFIG_FOO) += file.o)
+                for line in makefile_content.splitlines():
+                    if obj_name in line:
+                        cfgs = re.findall(r"CONFIG_[A-Za-z0-9_]+", line)
+                        for cfg in cfgs:
+                            found_configs.add(cfg)
+
+                # Case B: Composite module hit (e.g. nfs-y += dir.o -> obj-$(CONFIG_NFS_FS) += nfs.o)
+                # Find variable target like 'nfs-y' or 'nfs-objs'
+                composite_vars = re.findall(r"([A-Za-z0-9_-]+)-(?:y|objs)\s*\+?=", makefile_content)
+                for var_prefix in composite_vars:
+                    # Check if obj_name is part of this composite definition
+                    pattern = rf"{var_prefix}-(?:y|objs)\s*\+?=.*?\b{re.escape(obj_name)}\b"
+                    if re.search(pattern, makefile_content, re.DOTALL):
+                        parent_obj = var_prefix + ".o"
+                        # Search Makefile for parent module's CONFIG_ flag
+                        for line in makefile_content.splitlines():
+                            if parent_obj in line:
+                                for cfg in re.findall(r"CONFIG_[A-Za-z0-9_]+", line):
+                                    found_configs.add(cfg)
+
+            except Exception as e:
+                print(f"  Error parsing Makefile in {dirname}: {e}")
+
+    return sorted(list(found_configs))
+
 def find_and_cscope(image_dir: str, arch: str) -> None:
-    """Build a clean, reliable cscope index for the kernel tree."""
+    """Build a fast, single-pass cscope index including sources, Makefiles, and Kconfigs."""
     cwd = os.getcwd()
     sa = _srcarch(arch)
 
     try:
         os.chdir(image_dir)
 
-        # 1. Clean up stale/old cscope database files to prevent "-q mismatch" errors
+        # 1. Clean up stale database files
         for db_file in ["cscope.out", "cscope.in.out", "cscope.po.out", "cscope.files"]:
             if os.path.exists(db_file):
                 try:
@@ -384,39 +464,63 @@ def find_and_cscope(image_dir: str, arch: str) -> None:
                 except OSError:
                     pass
 
-        # 2. Preserve your Kconfig swap logic
+        # 2. Preserve Kconfig backup logic
         kconfig_real = os.path.join(image_dir.rstrip("/"), "Kconfig")
         kconfig_backup = kconfig_real + ".firmsolo_bak"
 
         if os.path.exists(kconfig_real):
             shutil.copy2(kconfig_real, kconfig_backup)
-            print("  find_and_cscope: backed up Kconfig to Kconfig.firmsolo_bak")
 
-        arch_kconfig = "arch/{}/Kconfig".format(sa)
+        arch_kconfig = f"arch/{sa}/Kconfig"
         if os.path.exists(arch_kconfig):
-            os.system("rm -f Kconfig")
-            os.system("cp {} Kconfig".format(arch_kconfig))
+            if os.path.exists("Kconfig"):
+                os.remove("Kconfig")
+            shutil.copy2(arch_kconfig, "Kconfig")
+
+        print(f"  find_and_cscope: Scanning source tree for ARCH={sa}...")
+
+        # 3. Fast single-pass file discovery using `find` (pruning .git and build dirs)
+        find_cmd = [
+            "find", ".",
+            "-type", "d", "(", "-name", ".git", "-o", "-name", "Documentation", "-o", "-name", "scripts", ")", "-prune",
+            "-o", "-type", "f", "(",
+            "-name", "*.[chS]", "-o",
+            "-name", "Makefile*", "-o",
+            "-name", "Kconfig*",
+            ")", "-print"
+        ]
+
+        res = subprocess.run(find_cmd, stdout=subprocess.PIPE, text=True, check=False)
+        
+        if res.returncode == 0 and res.stdout:
+            files = res.stdout.strip().splitlines()
         else:
-            print("  find_and_cscope: arch Kconfig not found at {}".format(arch_kconfig))
+            # Fallback to pruned os.walk if `find` fails
+            valid_exts = ('.c', '.h', '.S', '.s')
+            files = []
+            for root, dirs, f_names in os.walk("."):
+                dirs[:] = [d for d in dirs if d not in (".git", "Documentation", "scripts")]
+                for file in f_names:
+                    if file.endswith(valid_exts) or file.startswith("Makefile") or file.startswith("Kconfig"):
+                        files.append(os.path.join(root, file))
 
-        # 3. Build cscope database cleanly using kernel's tags.sh
-        print("  find_and_cscope: indexing C source tree via tags.sh (ARCH={})...".format(sa))
-        env = os.environ.copy()
-        env["ARCH"] = sa
+        with open("cscope.files", "w") as f:
+            f.write("\n".join(files) + "\n")
 
+        # 4. Build inverted index database ONCE (-b = background, -q = fast inverted index, -k = kernel mode)
+        print("  find_and_cscope: Building fast cscope inverted index...")
         subprocess.run(
-            ["./scripts/tags.sh", "cscope"],
+            ["cscope", "-b", "-q", "-k", "-i", "cscope.files"],
             cwd=image_dir,
-            env=env,
             check=True,
-            stderr=subprocess.DEVNULL  # Silences harmless arch glob warnings
+            stderr=subprocess.DEVNULL
         )
+
         print("  find_and_cscope: cscope index built successfully.")
 
-        # 4. Restore original Kconfig
+        # 5. Restore original Kconfig
         if os.path.exists(kconfig_backup):
             shutil.move(kconfig_backup, kconfig_real)
-            print("  find_and_cscope: restored real top-level Kconfig")
 
     except Exception as e:
         print("Cscope failed:", e)
@@ -607,6 +711,12 @@ def compile_kernel(
         )
 
         find_and_cscope(image_dir, arch)
+
+        # Translate symbols to CONFIG_ options and append them to ds_options
+        resolved_configs = resolve_symbols_to_configs(image_dir, symbolz)
+        for cfg in resolved_configs:
+            if cfg not in ds_options:
+                ds_options.append(cfg)
 
         try:
             update_config(

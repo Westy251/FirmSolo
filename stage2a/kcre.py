@@ -1015,13 +1015,14 @@ def def_and_set(
 
     # ── DS options ────────────────────────────────────────────────────────────
     for opt in ds_options:
+        img_inst.set_option(opt, 2)  # Enable the target option directly (y=2)
         img_inst.kconf._tokens = img_inst.kconf._tokenize(
             "if " + opt.replace("CONFIG_", "")
         )
         img_inst.kconf._line = opt.replace("CONFIG_", "")
         img_inst.kconf._tokens_i = 1
         expression = img_inst.kconf._expect_expr_and_eol()
-        img_inst._split_expr_info(expression, expression)
+        img_inst._split_expr_info(expression, expression)  # Resolve all parent dependencies
 
     img_inst.set_option("CONFIG_VGA_CONSOLE", 0)
     img_inst.set_option("CONFIG_VIDEO_IVTV", 0)

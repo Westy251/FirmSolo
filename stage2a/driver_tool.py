@@ -58,12 +58,8 @@ print("=" * 60)
 # KCRE automatically resolves all upstream Kconfig dependencies.
 conf_opts = [
     "CONFIG_LTO_CLANG_FULL",
-    "CONFIG_LD_DEAD_CODE_DATA_ELIMINATION",  # Prunes unused functions at link time
-    "CONFIG_CC_OPTIMIZE_FOR_SIZE",
-    "CONFIG_LD_DEAD_CODE_DATA_ELIMINATION",  # Prunes unused functions at link time
-    "CONFIG_CC_OPTIMIZE_FOR_SIZE",
 ]
-symbolz = ["generic_permission", "security_inode_init_security"]
+symbolz = ["ice_gnss_read"]
 
 # ── Plumbing ──────────────────────────────────────────────────────────────────
 image_id = "custom_build"

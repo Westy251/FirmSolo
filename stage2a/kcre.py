@@ -946,64 +946,13 @@ def def_and_set(
     print("Version Magic", ver_magicz)
 
     img_inst = Image(kconf, image, module_configs, arch)
-    module_names = [x.split("/")[-1] for x in modulez]
 
-    # ── Netfilter core ────────────────────────────────────────────────────────
-    flag = any(mod in module_names for mod in core_nf_modules)
-    for indx, mod in enumerate(core_nf_modules):
-        img_inst.set_option(core_nf_options[indx], 1 if flag else 2)
-
-    img_inst.set_upstream_modules(module_configs)
-
+    # 1. Apply any explicitly requested options passed via seen_opt
     for opt in seen_opt:
-        if "CONFIG_" not in opt:
-            continue
-        img_inst.set_option(opt, 2)
+        if "CONFIG_" in opt:
+            img_inst.set_option(opt, 2)
 
-    # ── Firmadyne / FirmSolo markers ──────────────────────────────────────────
-    img_inst.set_option("CONFIG_FIRMADYNE", 2)
-    img_inst.set_option("CONFIG_MODULE_SRCVERSION_ALL", 0)
-    img_inst.set_option("CONFIG_LOCALVERSION_AUTO", 0)
-
-    # ── MODULES – must be on or scripts/mod and modules_install fail ──────────
-    img_inst.set_option("CONFIG_MODULES", 2)
-    img_inst.set_option("CONFIG_MODULE_UNLOAD", 2)
-
-    if kernel > "linux-3.10.0":
-        img_inst.set_option("CONFIG_GPIOLIB", 0)
-
-    img_inst.set_option("CONFIG_DEBUG_INFO", 2)
-    img_inst.set_option("CONFIG_MTD", 2)
-    img_inst.set_option("CONFIG_MTD_PARTITIONS", 2)
-    img_inst.set_option("CONFIG_MTD_NAND", 2)
-    img_inst.set_option("CONFIG_MTD_NAND_CORE", 2)
-    img_inst.set_option("CONFIG_MTD_NAND_NANDSIM", 2)
-    img_inst.set_option("CONFIG_SERIAL_8250_EXTENDED", 2)
-    img_inst.set_option("CONFIG_SERIAL_8250_PCI", 2)
-    img_inst.set_option("CONFIG_SERIAL_8250_CONSOLE", 2)
-    img_inst.set_option("CONFIG_SERIAL_8250_MANY_PORTS", 2)
-    img_inst.set_option("CONFIG_SERIAL_8250_RSA", 2)
-    img_inst.set_option("CONFIG_BLK_DEV_INITRD", 2)
-    img_inst.set_option("CONFIG_BLK_DEV_RAM", 2)
-    img_inst.set_option("CONFIG_PROC_FS", 2)
-    img_inst.set_option("CONFIG_SYSFS", 2)
-    img_inst.set_option("CONFIG_SHMEM", 2)
-    img_inst.set_option("CONFIG_TMPFS", 2)
-    img_inst.set_option("CONFIG_ZONE_DMA", 0)
-    img_inst.set_option("CONFIG_SOUND", 0)
-    img_inst.set_option("CONFIG_UEVENT_HELPER_PATH", "")
-    img_inst.set_option("CONFIG_CMDLINE", "")
-    img_inst.set_option("CONFIG_CMDLINE_OVERRIDE", 0)
-    img_inst.set_option("CONFIG_EMBEDDED", 2)
-
-    if arch == "arm":
-        try:
-            if img_inst.kconf.syms["NEW_LEDS"].tri_value == 2:
-                img_inst.set_option("CONFIG_LEDS_CLASS", 2, True)
-        except Exception:
-            pass
-
-    # ── Guard expressions ─────────────────────────────────────────────────────
+    # 2. Process Guard expressions
     for guard in guard_options:
         img_inst.kconf._tokens = img_inst.kconf._tokenize(
             "if " + guard.replace("CONFIG_", "")
@@ -1013,69 +962,24 @@ def def_and_set(
         expression = img_inst.kconf._expect_expr_and_eol()
         img_inst._split_expr_info(expression, expression)
 
-    # ── DS options ────────────────────────────────────────────────────────────
+    # 3. Enable Target DS options and recursively solve parent dependencies
     for opt in ds_options:
-        img_inst.set_option(opt, 2)  # Enable the target option directly (y=2)
+        img_inst.set_option(opt, 2)  # Enable target directly (y=2)
         img_inst.kconf._tokens = img_inst.kconf._tokenize(
             "if " + opt.replace("CONFIG_", "")
         )
         img_inst.kconf._line = opt.replace("CONFIG_", "")
         img_inst.kconf._tokens_i = 1
         expression = img_inst.kconf._expect_expr_and_eol()
-        img_inst._split_expr_info(expression, expression)  # Resolve all parent dependencies
+        img_inst._split_expr_info(expression, expression)  # Resolve parents
 
-    img_inst.set_option("CONFIG_VGA_CONSOLE", 0)
-    img_inst.set_option("CONFIG_VIDEO_IVTV", 0)
-    img_inst.set_option("IDE", 2, "override")
-    img_inst.set_option("CONFIG_BLK_DEV_IDEDISK", 2, True)
-    img_inst.set_option("CONFIG_IDE_GENERIC", 2, True)
-    img_inst.set_option("CONFIG_IDE_GD", 2, True)
-    img_inst.set_option("BLK_DEV_PIIX", 2, True)
-    img_inst.set_option("EXT2_FS", 2, True)
-    img_inst.set_option("CONFIG_MODULE_FORCE_LOAD", 2, True)
-    img_inst.set_option("CONFIG_EXT2_FS_POSIX_ACL", 0, True)
-    img_inst.set_option("CONFIG_DEBUG_PREEMPT", 0, True)
-
-    # ── Architecture-specific settings ───────────────────────────────────────
-    # FIXED: gate vermagic and HZ behind arm/mips only.
-    # For x86_64 the defconfig already sets appropriate platform values;
-    # calling set_ver_magic([]) would incorrectly disable SMP and MODULE_UNLOAD.
+    # 4. Architecture-specific tweaks (only if required)
     if arch in ("arm", "mips"):
         img_inst.set_ver_magic(ver_magicz)
-        img_inst.set_option("CONFIG_HZ_250", 2)
-
-    if arch == "arm":
-        if "ARMv5" in ver_magicz:
-            img_inst.set_option("CONFIG_SCSI_SYM53C8XX", 2, True)
-            img_inst.set_option("CONFIG_SCSI_SYM53C8XX_2", 2, True)
-        if (
-            "CONFIG_ARM_UNWIND" not in seen_opt
-            and "CONFIG_ARM_UNWIND" not in guard_options
-            and kernel < "linux-3.10"
-        ):
-            img_inst.set_option("CONFIG_ARM_UNWIND", 0)
-        img_inst.set_option("CONFIG_SCSI", 2, True)
-        img_inst.set_option("CONFIG_BLK_DEV_SD", 2, True)
-        img_inst.set_option("CONFIG_VT", 0)
-        img_inst.set_option("CONFIG_VIDEO_DEV", 0)
-        img_inst.set_option("CONFIG_MMC", 2, True)
-        img_inst.set_option("CONFIG_MMC_BLOCK", 2, True)
-        img_inst.set_option("CONFIG_MMC_ARMMCI", 2, True)
-        img_inst.set_option("CONFIG_SMC91X", 0, True)
-        img_inst.set_option("CONFIG_MMU", 2, True)
-
-    if arch == "mips" and kernel < "linux-4.0":
-        img_inst.set_option("CONFIG_CC_STACKPROTECTOR_REGULAR", 0)
-        img_inst.set_option("CONFIG_CC_STACKPROTECTOR_NONE", 2)
-        if endianess == "little endian":
-            img_inst.set_option("CPU_LITTLE_ENDIAN", 2)
-        else:
-            img_inst.set_option("CPU_BIG_ENDIAN", 2)
 
     print("OPTIONS\n", seen_opt)
     print("GUARDS\n", guard_options)
     print("DS OPTIONS\n", ds_options)
-    print("Module Config", img_inst.module_configs)
 
     try:
         img_inst.kconf.write_config()
@@ -1083,7 +987,6 @@ def def_and_set(
         print("Kconfig write failed")
 
     print("KERNEL is", kernel)
-
 
 # ── Public interface ──────────────────────────────────────────────────────────
 

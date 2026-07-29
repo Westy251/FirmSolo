@@ -449,7 +449,15 @@ def resolve_symbols_to_configs(image_dir: str, symbols: List[str]) -> List[str]:
     return sorted(list(found_configs))
 
 def find_and_cscope(image_dir: str, arch: str) -> None:
-    """Build a fast, single-pass cscope index including sources, Makefiles, and Kconfigs."""
+    
+    cscope_db = os.path.join(image_dir, "cscope.out")
+    force_rebuild = False
+    # If database already exists and rebuild isn't forced, skip!
+    if os.path.exists(cscope_db) and not force_rebuild:
+        print("  find_and_cscope: Reusing existing cscope database.")
+        return
+
+    """Build a clean, reliable cscope index including source files and Makefiles."""
     cwd = os.getcwd()
     sa = _srcarch(arch)
 
@@ -471,50 +479,40 @@ def find_and_cscope(image_dir: str, arch: str) -> None:
         if os.path.exists(kconfig_real):
             shutil.copy2(kconfig_real, kconfig_backup)
 
-        arch_kconfig = f"arch/{sa}/Kconfig"
+        arch_kconfig = "arch/{}/Kconfig".format(sa)
         if os.path.exists(arch_kconfig):
-            if os.path.exists("Kconfig"):
-                os.remove("Kconfig")
-            shutil.copy2(arch_kconfig, "Kconfig")
+            os.system("rm -f Kconfig")
+            os.system("cp {} Kconfig".format(arch_kconfig))
 
-        print(f"  find_and_cscope: Scanning source tree for ARCH={sa}...")
+        # 3. Generate base source file list via tags.sh
+        print("  find_and_cscope: indexing C source tree via tags.sh (ARCH={})...".format(sa))
+        env = os.environ.copy()
+        env["ARCH"] = sa
 
-        # 3. Fast single-pass file discovery using `find` (pruning .git and build dirs)
-        find_cmd = [
-            "find", ".",
-            "-type", "d", "(", "-name", ".git", "-o", "-name", "Documentation", "-o", "-name", "scripts", ")", "-prune",
-            "-o", "-type", "f", "(",
-            "-name", "*.[chS]", "-o",
-            "-name", "Makefile*", "-o",
-            "-name", "Kconfig*",
-            ")", "-print"
-        ]
-
-        res = subprocess.run(find_cmd, stdout=subprocess.PIPE, text=True, check=False)
-        
-        if res.returncode == 0 and res.stdout:
-            files = res.stdout.strip().splitlines()
-        else:
-            # Fallback to pruned os.walk if `find` fails
-            valid_exts = ('.c', '.h', '.S', '.s')
-            files = []
-            for root, dirs, f_names in os.walk("."):
-                dirs[:] = [d for d in dirs if d not in (".git", "Documentation", "scripts")]
-                for file in f_names:
-                    if file.endswith(valid_exts) or file.startswith("Makefile") or file.startswith("Kconfig"):
-                        files.append(os.path.join(root, file))
-
-        with open("cscope.files", "w") as f:
-            f.write("\n".join(files) + "\n")
-
-        # 4. Build inverted index database ONCE (-b = background, -q = fast inverted index, -k = kernel mode)
-        print("  find_and_cscope: Building fast cscope inverted index...")
         subprocess.run(
-            ["cscope", "-b", "-q", "-k", "-i", "cscope.files"],
+            ["./scripts/tags.sh", "cscope"],
             cwd=image_dir,
-            check=True,
+            env=env,
+            check=False,
             stderr=subprocess.DEVNULL
         )
+
+        # 4. Append Makefiles and Kconfigs to cscope.files and generate inverted index
+        if os.path.exists("cscope.files"):
+            with open("cscope.files", "a") as f:
+                for root, _, files in os.walk("."):
+                    for file in files:
+                        if file.startswith("Makefile") or file.startswith("Kconfig"):
+                            rel_p = os.path.relpath(os.path.join(root, file), ".")
+                            f.write(rel_p + "\n")
+
+            # Build fast inverted cscope database (-b -q -k)
+            subprocess.run(
+                ["cscope", "-b", "-q", "-k", "-i", "cscope.files"],
+                cwd=image_dir,
+                check=True,
+                stderr=subprocess.DEVNULL
+            )
 
         print("  find_and_cscope: cscope index built successfully.")
 

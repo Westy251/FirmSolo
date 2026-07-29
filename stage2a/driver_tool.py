@@ -21,15 +21,20 @@ import shutil
 currentdir = os.path.dirname(os.path.realpath(__file__))
 os.environ["KCFLAGS"] = "-flto=full -ffat-lto-objects -fexperimental-call-graph-section"
 os.environ["MAKEFLAGS"] = f"-j{os.cpu_count() or 1}"
+os.environ["LLVM"] = "1"
+os.environ["CC"] = "clang"
 sys.path.insert(0, currentdir)
 
 import custom_utils as cu
 from firm_kern_comp import compile_kernel
+from capCheckingFunctions import capFuncs
 
 
 # ── Target platform ───────────────────────────────────────────────────────────
 kernel_version = "6.18"
 arch = "x86_64"  # CHANGED from arm – build/analyse x86_64 kernel
+os.environ["ARCH"] = arch
+
 endianess = "little"
 # ver_magicz: empty for x86_64 – platform settings come from x86_64_defconfig.
 # (For ARM/MIPS firmware analysis this would contain e.g. ["ARMv7", "p2v8"])
@@ -59,7 +64,7 @@ print("=" * 60)
 conf_opts = [
     "CONFIG_LTO_CLANG_FULL",
 ]
-symbolz = ["ice_gnss_read"]
+symbolz = []
 
 # ── Plumbing ──────────────────────────────────────────────────────────────────
 image_id = "custom_build"

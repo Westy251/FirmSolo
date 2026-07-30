@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union, Tuple, Any
 
 currentdir = os.path.dirname(os.path.realpath(__file__))
 parentdir = os.path.dirname(currentdir)
@@ -45,11 +45,6 @@ def _srcarch(arch: str) -> str:
 
 
 def _build_flags(kernel: str, arch: str, cross: str, extraver: str) -> List[str]:
-    """
-    Return the make-variable list for this kernel.
-    >= linux-5.0 with clang+lld → LLVM=1 (no CROSS_COMPILE).
-    Older or GCC-only → CROSS_COMPILE=<prefix>.
-    """
     if cu.use_llvm_for_kernel(kernel):
         return ["ARCH={}".format(arch), "LLVM=1", extraver]
     else:
@@ -57,10 +52,6 @@ def _build_flags(kernel: str, arch: str, cross: str, extraver: str) -> List[str]
 
 
 def _setup_build_env(arch: str, cross: str, image_dir: str) -> None:
-    """
-    Set env vars needed by scripts/Kconfig.include and kconfiglib before
-    any make or kconfiglib invocation.
-    """
     srcarch = _srcarch(arch)
     os.environ["ARCH"] = arch
     os.environ["SRCARCH"] = srcarch
@@ -72,7 +63,6 @@ def _setup_build_env(arch: str, cross: str, image_dir: str) -> None:
     os.environ["CC"] = cc
     print("  build_env: CC={}  ARCH={}  SRCARCH={}".format(cc, arch, srcarch))
 
-    # AS for $(as-version) probes – prefer GNU binutils
     for cand in ["as", "x86_64-linux-gnu-as", "llvm-as"]:
         found = shutil.which(cand)
         if found:
@@ -171,9 +161,6 @@ def make_tinyconfig(
     logfile: str,
     errfile: str,
 ) -> None:
-    """
-    Apply a tinyconfig (or allnoconfig fallback for <3.18) to the kernel source directory.
-    """
     cwd = os.getcwd()
     os.chdir(image_dir)
     print("Changed Directory to ", image_dir)
@@ -184,7 +171,6 @@ def make_tinyconfig(
     else:
         make_base = "make ARCH={} CROSS_COMPILE={}".format(arch, cross)
 
-    # tinyconfig target was added in Linux ~3.18; fallback to allnoconfig for older versions
     target = "tinyconfig" if kernel >= "linux-3.18" else "allnoconfig"
     print("Using minimal config target:", target)
     cmd = "{} {}".format(make_base, target)
@@ -261,7 +247,7 @@ def do_compile(
             
             if comp.returncode != 0:
                 print("❌ MAKE BUILD FAILED WITH ERROR:")
-                print(comp.stderr[-2000:])  # Print the last 2000 characters of the error log
+                print(comp.stderr[-2000:])
                 raise RuntimeError("Kernel build failed. See stdout/stderr above.")
 
             print("Done with the kernel compilation")
@@ -368,7 +354,62 @@ def do_compile(
     print("Changed Directory back to ", cwd)
 
 
-def resolve_symbols_to_configs(image_dir: str, symbols: List[str]) -> List[str]:
+def parse_symbol_spec(spec: Any) -> Tuple[str, Optional[str], Optional[int]]:
+    """
+    Normalizes target capability inputs into (symbol_name, relative_file_path, line_number).
+    Supported formats:
+      - "sym_name"
+      - ("sym_name", "kernel/reboot.c")
+      - ("sym_name", "kernel/reboot.c", 123)
+      - "kernel/reboot.c:123:sym_name" or "kernel/reboot.c:sym_name"
+      - "sym_name@kernel/reboot.c:123"
+      - {"symbol": "sym_name", "file": "kernel/reboot.c", "line": 123}
+    """
+    if isinstance(spec, dict):
+        return spec.get("symbol", ""), spec.get("file"), spec.get("line")
+
+    if isinstance(spec, (tuple, list)):
+        sym = str(spec[0])
+        file_p = str(spec[1]) if len(spec) > 1 and spec[1] else None
+        line_n = int(spec[2]) if len(spec) > 2 and spec[2] is not None else None
+        return sym, file_p, line_n
+
+    if isinstance(spec, str):
+        s = spec.strip()
+        if "@" in s:
+            sym, loc = s.split("@", 1)
+            if ":" in loc:
+                f, l = loc.split(":", 1)
+                return sym.strip(), f.strip(), int(l) if l.isdigit() else None
+            return sym.strip(), loc.strip(), None
+
+        if ":" in s:
+            parts = s.split(":")
+            if len(parts) == 3:
+                # e.g., kernel/reboot.c:123:force_store
+                if parts[1].isdigit():
+                    return parts[2].strip(), parts[0].strip(), int(parts[1])
+                # e.g., force_store:kernel/reboot.c:123
+                elif parts[2].isdigit():
+                    return parts[0].strip(), parts[1].strip(), int(parts[2])
+            elif len(parts) == 2:
+                # e.g., kernel/reboot.c:force_store
+                if parts[0].endswith((".c", ".h", ".S")):
+                    return parts[1].strip(), parts[0].strip(), None
+                # e.g., force_store:kernel/reboot.c
+                elif parts[1].endswith((".c", ".h", ".S")):
+                    return parts[0].strip(), parts[1].strip(), None
+
+        return s, None, None
+
+    return str(spec), None, None
+
+
+def resolve_symbols_to_configs(image_dir: str, symbols: List[Any]) -> List[str]:
+    """
+    Queries cscope to identify exact file/line matches for input capabilities,
+    then locates associated Makefile CONFIG_ flags while excluding collision paths.
+    """
     found_configs = set()
     cscope_db = os.path.join(image_dir, "cscope.out")
 
@@ -379,89 +420,141 @@ def resolve_symbols_to_configs(image_dir: str, symbols: List[str]) -> List[str]:
         print(f"  [resolve_symbols] Error: {cscope_db} not found.")
         return []
 
-    for sym in symbols:
-        if not sym:
+    for spec in symbols:
+        print (spec)
+        if not spec:
             continue
-            
-        clean_sym = re.sub(r"\.(isra|constprop|part)\.\d+", "", sym).strip()
+
+        sym, file_spec, line_spec = parse_symbol_spec(spec)
         defined_files = set()
 
-        # Query cscope using -L1 (definitions) and -L0 (symbol references)
-        for flag in ["-L1", "-L0"]:
-            try:
-                res = subprocess.run(
-                    ["cscope", "-d", "-f", cscope_db, flag, clean_sym],
-                    cwd=image_dir,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-                for line in res.stdout.strip().splitlines():
-                    parts = line.split()
-                    if parts:
-                        abs_or_rel = parts[0]
-                        # Convert absolute paths to relative paths against image_dir
-                        rel_file = os.path.relpath(abs_or_rel, image_dir)
-                        if rel_file.endswith((".c", ".h", ".S")):
+        # Only run expensive cscope searches if sym is a valid C identifier
+        if sym and C_IDENTIFIER_RE.match(sym):
+            clean_sym = re.sub(r"\.(isra|constprop|part)\.\d+", "", sym).strip()
+            for flag in ["-L1", "-L0"]:
+                try:
+                    res = subprocess.run(
+                        ["cscope", "-d", "-f", cscope_db, flag, clean_sym],
+                        cwd=image_dir,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                    for line in res.stdout.strip().splitlines():
+                        parts = line.split(maxsplit=3)
+                        if len(parts) >= 3:
+                            abs_or_rel = parts[0]
+                            rel_file = os.path.relpath(abs_or_rel, image_dir)
+                            if not rel_file.endswith((".c", ".h", ".S")):
+                                continue
+
+                            if file_spec:
+                                norm_spec = os.path.normpath(file_spec)
+                                norm_rel = os.path.normpath(rel_file)
+                                if not norm_rel.endswith(norm_spec):
+                                    continue
+
+                            if line_spec is not None:
+                                try:
+                                    cscope_line = int(parts[2])
+                                    if abs(cscope_line - line_spec) > 50:
+                                        continue
+                                except ValueError:
+                                    pass
+
                             defined_files.add(rel_file)
-                if defined_files:
-                    break
-            except Exception as e:
-                print(f"  [cscope] Query error for '{clean_sym}': {e}")
 
+                    if defined_files:
+                        break
+                except Exception as e:
+                    print(f"  [cscope] Query error for '{clean_sym}': {e}")
+
+        # Direct file fallback: If sym was None/invalid or cscope yielded no hit,
+        # jump straight to processing the Makefile for file_spec!
+        if not defined_files and file_spec:
+            rel_f = (
+                os.path.relpath(file_spec, image_dir)
+                if os.path.isabs(file_spec)
+                else file_spec
+            )
+            if os.path.exists(os.path.join(image_dir, rel_f)):
+                defined_files.add(rel_f)
+
+      # Process Makefiles associated with matched target files by climbing parent directories
         for rel_file in defined_files:
-            dirname = os.path.dirname(rel_file)
-            filename = os.path.basename(rel_file)
-            obj_name = os.path.splitext(filename)[0] + ".o"
+            rel_path = os.path.normpath(rel_file)
+            parts = rel_path.split(os.sep)
 
-            makefile_path = os.path.join(image_dir, dirname, "Makefile")
-            if not os.path.exists(makefile_path):
+            if not parts:
                 continue
 
-            try:
-                with open(makefile_path, "r", errors="replace") as mf:
-                    makefile_content = mf.read()
+            # Start target as the object file (e.g., 'fs.o')
+            target_name = os.path.splitext(parts[-1])[0] + ".o"
+            dir_parts = parts[:-1]
 
-                # Case A: Direct hit (obj-$(CONFIG_FOO) += file.o)
-                for line in makefile_content.splitlines():
-                    if obj_name in line:
-                        cfgs = re.findall(r"CONFIG_[A-Za-z0-9_]+", line)
-                        for cfg in cfgs:
+            # Ascend the directory tree to collect both target configs and parent folder gates
+            while dir_parts:
+                curr_dir_rel = os.path.join(*dir_parts)
+
+                makefile_path = os.path.join(image_dir, curr_dir_rel, "Makefile")
+                if not os.path.exists(makefile_path):
+                    makefile_path = os.path.join(image_dir, curr_dir_rel, "Kbuild")
+
+                if os.path.exists(makefile_path):
+                    try:
+                        with open(makefile_path, "r", errors="replace") as mf:
+                            content = mf.read()
+
+                        # Strip Makefile comments and handle continuation lines (\)
+                        content = re.sub(r"#.*", "", content)
+                        content = content.replace("\\\n", " ")
+
+                        # 1. Match direct obj-$(CONFIG_FOO) += target.o OR obj-$(CONFIG_FOO) += target_dir/
+                        direct_pattern = re.compile(
+                            rf"obj-\$\((CONFIG_[A-Za-z0-9_]+)\)\s*\+=\s*.*?\b{re.escape(target_name)}\b"
+                        )
+                        for cfg in direct_pattern.findall(content):
                             found_configs.add(cfg)
 
-                # Updated Case B in firm_kern_comp.py:
-                composite_vars = re.findall(r"([A-Za-z0-9_-]+)-(?:y|objs)\s*[:\+]?=", makefile_content)
-                for var_prefix in composite_vars:
-                    pattern = rf"{var_prefix}-(?:y|objs)\s*[:\+]?=.*?\b{re.escape(obj_name)}\b"
-                    if re.search(pattern, makefile_content, re.DOTALL):
-                        parent_obj = var_prefix + ".o"
-                        for line in makefile_content.splitlines():
-                            if parent_obj in line:
-                                for cfg in re.findall(r"CONFIG_[A-Za-z0-9_]+", line):
-                                    found_configs.add(cfg)
+                        # 2. Match composite objects (e.g. ipe-y += fs.o) and check their container gates
+                        comp_matches = re.finditer(
+                            rf"([a-zA-Z0-9_-]+)-(?:y|objs|\$\((CONFIG_[A-Za-z0-9_]+)\))\s*\+=\s*.*?\b{re.escape(target_name)}\b",
+                            content,
+                        )
+                        for m in comp_matches:
+                            if m.group(2):  # Guard directly on the composite line
+                                found_configs.add(m.group(2))
 
-            except Exception as e:
-                print(f"  Error parsing Makefile in {dirname}: {e}")
+                            # Extract container object (e.g. 'ipe.o') and search for its parent CONFIG gate
+                            comp_obj = m.group(1) + ".o"
+                            comp_pattern = re.compile(
+                                rf"obj-\$\((CONFIG_[A-Za-z0-9_]+)\)\s*\+=\s*.*?\b{re.escape(comp_obj)}\b"
+                            )
+                            for cfg in comp_pattern.findall(content):
+                                found_configs.add(cfg)
+
+                    except Exception as e:
+                        print(f"  [Makefile] Read error in {makefile_path}: {e}")
+
+                # Set next target to the directory name (e.g. 'ipe/') for parent Makefile evaluation
+                target_name = dir_parts[-1] + "/"
+                dir_parts.pop()
 
     return sorted(list(found_configs))
 
 def find_and_cscope(image_dir: str, arch: str) -> None:
-    
     cscope_db = os.path.join(image_dir, "cscope.out")
     force_rebuild = False
-    # If database already exists and rebuild isn't forced, skip!
     if os.path.exists(cscope_db) and not force_rebuild:
         print("  find_and_cscope: Reusing existing cscope database.")
         return
 
-    """Build a clean, reliable cscope index including source files and Makefiles."""
     cwd = os.getcwd()
     sa = _srcarch(arch)
 
     try:
         os.chdir(image_dir)
 
-        # 1. Clean up stale database files
         for db_file in ["cscope.out", "cscope.in.out", "cscope.po.out", "cscope.files"]:
             if os.path.exists(db_file):
                 try:
@@ -469,7 +562,6 @@ def find_and_cscope(image_dir: str, arch: str) -> None:
                 except OSError:
                     pass
 
-        # 2. Preserve Kconfig backup logic
         kconfig_real = os.path.join(image_dir.rstrip("/"), "Kconfig")
         kconfig_backup = kconfig_real + ".firmsolo_bak"
 
@@ -481,7 +573,6 @@ def find_and_cscope(image_dir: str, arch: str) -> None:
             os.system("rm -f Kconfig")
             os.system("cp {} Kconfig".format(arch_kconfig))
 
-        # 3. Generate base source file list via tags.sh
         print("  find_and_cscope: indexing C source tree via tags.sh (ARCH={})...".format(sa))
         env = os.environ.copy()
         env["ARCH"] = sa
@@ -494,7 +585,6 @@ def find_and_cscope(image_dir: str, arch: str) -> None:
             stderr=subprocess.DEVNULL
         )
 
-        # 4. Append Makefiles and Kconfigs to cscope.files and generate inverted index
         if os.path.exists("cscope.files"):
             with open("cscope.files", "a") as f:
                 for root, _, files in os.walk("."):
@@ -503,7 +593,6 @@ def find_and_cscope(image_dir: str, arch: str) -> None:
                             rel_p = os.path.relpath(os.path.join(root, file), ".")
                             f.write(rel_p + "\n")
 
-            # Build fast inverted cscope database (-b -q -k)
             subprocess.run(
                 ["cscope", "-b", "-q", "-k", "-i", "cscope.files"],
                 cwd=image_dir,
@@ -513,7 +602,6 @@ def find_and_cscope(image_dir: str, arch: str) -> None:
 
         print("  find_and_cscope: cscope index built successfully.")
 
-        # 5. Restore original Kconfig
         if os.path.exists(kconfig_backup):
             shutil.move(kconfig_backup, kconfig_real)
 
@@ -522,10 +610,10 @@ def find_and_cscope(image_dir: str, arch: str) -> None:
     finally:
         os.chdir(cwd)
 
+
 def copy_files(
     image_dir: str, new_kern_dir: str, s_config: str, arch: str = "arm"
 ) -> None:
-    """Copy build artefacts to the results directory."""
     print(
         "Copy files from directory {0} to directory {1}".format(image_dir, new_kern_dir)
     )
@@ -564,7 +652,8 @@ def save_sym_data(
     try:
         if time == "2":
             symvers, sysmap = exported_syms(image_dir)
-        for sym in symbolz:
+        for spec in symbolz:
+            sym, _, _ = parse_symbol_spec(spec)
             if time == "2":
                 if sym not in symvers and sym not in sysmap:
                     unknown.append(sym)
@@ -675,22 +764,17 @@ def compile_kernel(
     print("Image_dir = " + image_dir)
 
     outfile = resultdir + "results.out"
-    print(outfile)
     logfile = resultdir + "logs.out"
-    print(logfile)
     errfile = resultdir + "errors.out"
-    print(errfile)
 
     if not ds_recovery:
         print("Running Firmsolo in normal mode")
 
-        # Set CC / ARCH / SRCARCH / AS in env before any Kconfig work
         _setup_build_env(arch, cross, image_dir)
 
         hot_fixes(image_dir, kernel)
         fix_configs(image_dir, kernel)
 
-        # Initialize from tinyconfig (minimal config baseline) instead of a vendor defconfig
         make_tinyconfig(cross, arch, image_dir, kernel, logfile, errfile)
 
         unknown = save_sym_data(
@@ -707,7 +791,7 @@ def compile_kernel(
 
         find_and_cscope(image_dir, arch)
 
-        # Translate symbols to CONFIG_ options and append them to ds_options
+        # Perform symbol-to-config resolution using cscope line-number disambiguation
         resolved_configs = resolve_symbols_to_configs(image_dir, symbolz)
         for cfg in resolved_configs:
             if cfg not in ds_options:
@@ -844,6 +928,92 @@ def run_the_compilation(
     print(info[0], info[1], info[5], info[3], info[7])
     compile_kernel(image, ds_options, ds_recovery, s_mod_dir, s_config, openwrt, *info)
 
+# Valid C identifier regex: starts with a letter/underscore, followed by letters/digits/underscores
+C_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def find_caller_configs(image_dir: str, target_symbol: str) -> List[str]:
+    """Finds functions/files calling or referencing `target_symbol` using cscope.
+    Tries -L -3 (strict calling functions) first, falling back to -L -0 (symbol references)
+    if no direct call sites are found (e.g. macro wrappers, inline headers).
+    """
+    cscope_db = os.path.join(image_dir, "cscope.out")
+    if not os.path.exists(cscope_db):
+        print(f"Error: {cscope_db} not found. Run find_and_cscope first.")
+        return []
+
+    caller_specs = []
+    C_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+    def _parse_cscope_output(
+        raw_stdout: str, image_dir: str
+    ) -> List[Tuple[Optional[str], str, Optional[int]]]:
+        """Parses raw cscope output into (func, rel_file, line_num) tuples."""
+        results = []
+        if not raw_stdout:
+            return results
+
+        real_image_dir = os.path.realpath(image_dir)
+
+        for line in raw_stdout.strip().splitlines():
+            parts = line.split(maxsplit=3)
+            if len(parts) < 3:
+                continue
+
+            abs_file = os.path.realpath(
+                os.path.join(real_image_dir, parts[0])
+                if not os.path.isabs(parts[0])
+                else parts[0]
+            )
+            rel_file = os.path.relpath(abs_file, real_image_dir)
+
+            if not rel_file.endswith((".c", ".h", ".S")):
+                continue
+
+            func_name = parts[1].strip("`'\"")
+            line_num = int(parts[2]) if parts[2].isdigit() else None
+
+            results.append((func_name, rel_file, line_num))
+
+        return results
+
+    try:
+        # Step 1: Match your working terminal command (no -f flag, let cwd handle database location)
+        res = subprocess.run(
+            ["cscope", "-d", "-L3", target_symbol],
+            cwd=image_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if res.stderr.strip():
+            print(f"  [cscope stderr (-3)]: {res.stderr.strip()}")
+
+        caller_specs = _parse_cscope_output(res.stdout, image_dir)
+
+        # Step 2: Fallback to -L0 if -L3 returned 0 results
+        if not caller_specs:
+            print(f"  [-L3 returned 0 hits for '{target_symbol}'] Falling back to -L0 (symbol references)...")
+            res_l0 = subprocess.run(
+                ["cscope", "-d", "-L0", target_symbol],
+                cwd=image_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if res_l0.stderr.strip():
+                print(f"  [cscope stderr (-0)]: {res_l0.stderr.strip()}")
+
+            caller_specs = _parse_cscope_output(res_l0.stdout, image_dir)
+
+    except Exception as e:
+        print(f"Error searching references for '{target_symbol}': {e}")
+        return []
+
+    print(
+        f"Found {len(caller_specs)} sites referencing '{target_symbol}'. Resolving configs..."
+    )
+    return resolve_symbols_to_configs(image_dir, caller_specs)
 
 if __name__ == "__main__":
     parser = argp.ArgumentParser(description="Compile the FS kernel for an image")

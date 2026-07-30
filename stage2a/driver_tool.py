@@ -26,7 +26,7 @@ os.environ["CC"] = "clang"
 sys.path.insert(0, currentdir)
 
 import custom_utils as cu
-from firm_kern_comp import compile_kernel
+from firm_kern_comp import compile_kernel, find_caller_configs
 from capCheckingFunctions import capFuncs
 
 
@@ -39,6 +39,9 @@ endianess = "little"
 # ver_magicz: empty for x86_64 – platform settings come from x86_64_defconfig.
 # (For ARM/MIPS firmware analysis this would contain e.g. ["ARMv7", "p2v8"])
 ver_magicz: list = []
+
+capable_caller_configs = find_caller_configs("./../../../../output/kernel_dirs/linux-6.18/", "file_ns_capable")
+print(capable_caller_configs)
 
 # ── Toolchain ─────────────────────────────────────────────────────────────────
 cross_compiler = cu.get_toolchain(cu.kernel_prefix + kernel_version, arch, endianess)
@@ -65,8 +68,8 @@ conf_opts = [
     "CONFIG_LTO_CLANG_FULL",
     "CONFIG_MODULES",
     "!CONFIG_COMPILE_TEST",
-]
-symbolz = capFuncs 
+] + ['CONFIG_MMU', 'CONFIG_SECCOMP', 'CONFIG_SYSFS', 'CONFIG_TIME_NS', 'CONFIG_USER_NS']  
+symbolz = [] # capFuncs 
 
 # ── Plumbing ──────────────────────────────────────────────────────────────────
 image_id = "custom_build"

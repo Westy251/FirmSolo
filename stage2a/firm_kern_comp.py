@@ -429,15 +429,12 @@ def resolve_symbols_to_configs(image_dir: str, symbols: List[str]) -> List[str]:
                         for cfg in cfgs:
                             found_configs.add(cfg)
 
-                # Case B: Composite module hit (e.g. nfs-y += dir.o -> obj-$(CONFIG_NFS_FS) += nfs.o)
-                # Find variable target like 'nfs-y' or 'nfs-objs'
-                composite_vars = re.findall(r"([A-Za-z0-9_-]+)-(?:y|objs)\s*\+?=", makefile_content)
+                # Updated Case B in firm_kern_comp.py:
+                composite_vars = re.findall(r"([A-Za-z0-9_-]+)-(?:y|objs)\s*[:\+]?=", makefile_content)
                 for var_prefix in composite_vars:
-                    # Check if obj_name is part of this composite definition
-                    pattern = rf"{var_prefix}-(?:y|objs)\s*\+?=.*?\b{re.escape(obj_name)}\b"
+                    pattern = rf"{var_prefix}-(?:y|objs)\s*[:\+]?=.*?\b{re.escape(obj_name)}\b"
                     if re.search(pattern, makefile_content, re.DOTALL):
                         parent_obj = var_prefix + ".o"
-                        # Search Makefile for parent module's CONFIG_ flag
                         for line in makefile_content.splitlines():
                             if parent_obj in line:
                                 for cfg in re.findall(r"CONFIG_[A-Za-z0-9_]+", line):

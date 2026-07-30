@@ -53,7 +53,9 @@ capFuncs = [
 "unshare_nsproxy_namespaces",
 "cpu_store",
 "type_store",
-"force_store",
+'''
+"force_store", # THIS BUGGER BREAKS THE BUILD BY ENABLING CONFIG_LIVEPATCH
+'''
 "mode_store",
 "hw_protection_store",
 "__se_sys_reboot",
@@ -494,5 +496,16 @@ capFuncs = [
 "soft_store",
 "state_store.88526",
 "net_ctl_permissions",
+"security_capable",
+"has_ns_capability",
+"has_ns_capability_noaudit",
+"ns_capable_common",
+"ns_capable",
+"ns_capable_noaudit",
+"has_capability_noaudit",
+"ns_capable_setid",
+"capable",
+"file_ns_capable",
+"capable_wrt_inode_uidgid",
 ]
 

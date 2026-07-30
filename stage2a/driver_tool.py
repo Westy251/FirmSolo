@@ -63,8 +63,11 @@ print("=" * 60)
 # KCRE automatically resolves all upstream Kconfig dependencies.
 conf_opts = [
     "CONFIG_LTO_CLANG_FULL",
+    "CONFIG_MODULES",
+    "!CONFIG_COMPILE_TEST",
+    "CONFIG_AUTOFS_FS",            # Must be 'y', NOT 'm'
 ]
-symbolz = []
+symbolz = ["autofs_dev_ioctl"]
 
 # ── Plumbing ──────────────────────────────────────────────────────────────────
 image_id = "custom_build"

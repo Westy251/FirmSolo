@@ -116,21 +116,27 @@ def get_toolchain(kernel: str, arch: str, endianess: str) -> str:
 def get_cc_for_kconfig(arch: str, cross: str) -> str:
     """
     Best available CC for kconfiglib $(cc-option,...) probe macros.
-
-    Priority: cross-GCC → clang → host GCC → 'cc'.
-    On Alpine with only clang, arch-specific flags return 'n' which is the
-    correct conservative default for a cross-build probe.
     """
+    # 1. If LLVM=1 is active, ALWAYS return clang if available
+    if os.environ.get("LLVM") == "1" or cu.is_llvm_available():
+        clang = shutil.which("clang")
+        if clang:
+            print ("USING CLANG YAY")
+            return clang
+
+    # 2. Fall back to Cross-GCC if explicitly using a GCC cross-toolchain
     if cross:
         found = shutil.which(cross + "gcc")
         if found:
             return found
+
+    # 3. Generic fallbacks
     for cand in ("clang", "gcc", "cc"):
         found = shutil.which(cand)
         if found:
             return found
+    print ("KILL YOURSELF")
     return "cc"
-
 
 # ── Defconfig resolution ──────────────────────────────────────────────────────
 # String values that end in _defconfig are treated as built-in make targets

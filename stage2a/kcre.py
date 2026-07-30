@@ -254,6 +254,8 @@ def _setup_kconfig_env(arch: str, cross: str, kern_dir: str) -> None:
 
     # CC for $(cc-option,...) probes
     cc_candidates = []
+    if os.environ.get("LLVM") == "1":
+        cc_candidates.append("clang")
     if cross:
         cc_candidates.append(cross + "gcc")
     cc_candidates += ["clang", "gcc", "cc"]
@@ -947,31 +949,40 @@ def def_and_set(
 
     img_inst = Image(kconf, image, module_configs, arch)
 
-    # 1. Apply any explicitly requested options passed via seen_opt
-    for opt in seen_opt:
-        if "CONFIG_" in opt:
-            img_inst.set_option(opt, 2)
-
-    # 2. Process Guard expressions
+# 1. Process Guard expressions
     for guard in guard_options:
+        clean_guard = guard.replace("CONFIG_", "").lstrip("!")
         img_inst.kconf._tokens = img_inst.kconf._tokenize(
-            "if " + guard.replace("CONFIG_", "")
+            "if " + clean_guard
         )
-        img_inst.kconf._line = guard.replace("CONFIG_", "")
+        img_inst.kconf._line = clean_guard
         img_inst.kconf._tokens_i = 1
         expression = img_inst.kconf._expect_expr_and_eol()
         img_inst._split_expr_info(expression, expression)
 
-    # 3. Enable Target DS options and recursively solve parent dependencies
+    # 2. Enable Target DS options and recursively solve parent dependencies
     for opt in ds_options:
-        img_inst.set_option(opt, 2)  # Enable target directly (y=2)
+        clean_opt = opt.replace("CONFIG_", "").lstrip("!")
+        img_inst.set_option(clean_opt, 2)  # Enable target directly (y=2)
         img_inst.kconf._tokens = img_inst.kconf._tokenize(
-            "if " + opt.replace("CONFIG_", "")
+            "if " + clean_opt
         )
-        img_inst.kconf._line = opt.replace("CONFIG_", "")
+        img_inst.kconf._line = clean_opt
         img_inst.kconf._tokens_i = 1
         expression = img_inst.kconf._expect_expr_and_eol()
         img_inst._split_expr_info(expression, expression)  # Resolve parents
+
+    # 3. Apply explicitly requested options (seen_opt) LAST so user constraints override drivers
+    for opt in seen_opt:
+        if "CONFIG_" in opt:
+            if opt.startswith("!"):
+                # Handle negated options (e.g. "!CONFIG_COMPILE_TEST" -> set COMPILE_TEST to 0/n)
+                clean_opt = opt.replace("!CONFIG_", "").replace("!", "")
+                img_inst.set_option(clean_opt, 0, overwrite=True)
+            else:
+                # Handle positive options (e.g. "CONFIG_LTO_CLANG_FULL" -> set to 2/y)
+                clean_opt = opt.replace("CONFIG_", "")
+                img_inst.set_option(clean_opt, 2, overwrite=True)
 
     # 4. Architecture-specific tweaks (only if required)
     if arch in ("arm", "mips"):

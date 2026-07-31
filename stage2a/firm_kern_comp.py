@@ -233,36 +233,224 @@ def _query_configs_for_target(
 
     return configs
 
-def _find_configs_for_file(image_dir: str, rel_file: str) -> Set[str]:
-    """Walk from *rel_file*'s directory up to the kernel root collecting CONFIG gates.
 
-    At each level the current *target_name* is matched against that
-    directory's Makefile/Kbuild.  The target is then replaced by
-    ``<dirname>/`` and the walk moves one level up.
-    """
+
+def _find_configs_via_cscope_text(image_dir: str, rel_file: str) -> Set[str]:
+    """Use cscope text search (-L6) to find Makefile/Kbuild lines matching object stem."""
     configs: Set[str] = set()
-    parts = os.path.normpath(rel_file).split(os.sep)
-    if not parts:
+    cscope_db = os.path.join(image_dir, "cscope.out")
+    if not os.path.exists(cscope_db):
         return configs
 
-    target_name = os.path.splitext(parts[-1])[0] + ".o"
-    dir_parts   = parts[:-1]
+    # 'drivers/pci/pci-sysfs.c' -> 'pci-sysfs'
+    stem = os.path.splitext(os.path.basename(rel_file))[0]
 
-    while dir_parts:
-        curr_dir = os.path.join(image_dir, *dir_parts)
-
-        for mf_name in ("Makefile", "Kbuild"):
-            mf_path = os.path.join(curr_dir, mf_name)
-            if os.path.exists(mf_path):
-                assignments = _parse_makefile(mf_path)
-                configs.update(_query_configs_for_target(target_name, assignments))
-                break  # Makefile takes priority; don't parse both
-
-        target_name = dir_parts[-1] + "/"
-        dir_parts.pop()
+    try:
+        res = subprocess.run(
+            ["cscope", "-d", "-f", cscope_db, "-L6", stem],
+            cwd=image_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for line in res.stdout.splitlines():
+            # Only extract CONFIG_ tokens from Makefile/Kbuild lines
+            if "Makefile" in line or "Kbuild" in line:
+                for cfg in re.findall(r"CONFIG_[A-Za-z0-9_]+", line):
+                    configs.add(cfg)
+    except OSError as exc:
+        print(f"  [cscope -L6] Failed: {exc}")
 
     return configs
 
+def _resolve_target_in_assignments(assignments: List[Tuple[str, List[str]]], target_name: str) -> Tuple[Set[str], Set[str]]:
+    """Find all configs and composite parent targets (e.g. 'proc' for 'base.o') associated with target_name."""
+    configs = set()
+    parent_targets = set()
+
+    for lhs, rhs in assignments:
+        if target_name in rhs:
+            # Extract any CONFIG_ embedded in the LHS variable name (e.g. pci-$(CONFIG_SYSFS))
+            for cfg in re.findall(r"CONFIG_[A-Za-z0-9_]+", lhs):
+                configs.add(cfg)
+
+            # Extract any CONFIG_ passed as RHS tokens (e.g. obj-$(CONFIG_PCI))
+            for token in rhs:
+                if token.startswith("CONFIG_"):
+                    configs.add(token)
+
+            # Check if this target is part of a composite parent (e.g. 'proc-y' or 'ipe-objs')
+            comp_match = re.match(r"^([A-Za-z0-9_-]+)-(?:y|objs|\$\(CONFIG_[A-Za-z0-9_]+\))$", lhs)
+            if comp_match:
+                parent_stem = comp_match.group(1)
+                if parent_stem != "obj":
+                    parent_targets.add(f"{parent_stem}.o")
+
+    return configs, parent_targets
+
+def _parse_makefile_assignments(filepath: str) -> List[Tuple[str, List[str]]]:
+    """Parse a Makefile into a list of (LHS, [RHS_tokens]) assignments, handling '\\' continuations."""
+    if not os.path.exists(filepath):
+        return []
+
+    # 1. Join line continuations ('\\') and strip comments
+    raw_text = ""
+    with open(filepath, "r", errors="replace") as fh:
+        for line in fh:
+            line = line.split("#")[0]  # Strip inline comments
+            if line.endswith("\\\n") or line.endswith("\\"):
+                raw_text += line.rstrip("\\\n").rstrip("\\") + " "
+            else:
+                raw_text += line + "\n"
+
+    # 2. Tokenize assignments (+=, :=, =)
+    assignments = []
+    for line in raw_text.splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        parts = re.split(r"\+?=|:=", line, maxsplit=1)
+        if len(parts) == 2:
+            lhs = parts[0].strip()
+            rhs_tokens = parts[1].strip().split()
+            assignments.append((lhs, rhs_tokens))
+
+    return assignments
+
+def _extract_configs(text: str) -> Set[str]:
+    """Extract 'CONFIG_FOO' symbols using plain string parsing."""
+    configs = set()
+    # Normalize Makefile syntax like $(CONFIG_FOO) into clean tokens
+    clean_text = text.replace('$(', ' ').replace(')', ' ').replace('=', ' ')
+    for token in clean_text.split():
+        if 'CONFIG_' in token:
+            # Isolate the CONFIG_ symbol name
+            start = token.find('CONFIG_')
+            sub = token[start:]
+            # Grab characters until non-alphanumeric/underscore
+            cfg_name = []
+            for char in sub:
+                if char.isalnum() or char == '_':
+                    cfg_name.append(char)
+                else:
+                    break
+            configs.add("".join(cfg_name))
+    return configs
+
+def _get_clean_lines(filepath: str) -> List[str]:
+    """Read a Makefile, strip comments, and join backslash continuations."""
+    if not os.path.exists(filepath):
+        return []
+    
+    with open(filepath, "r", errors="replace") as fh:
+        raw_text = fh.read()
+
+    # Join backslash continuations
+    raw_text = raw_text.replace('\\\n', ' ')
+    
+    clean_lines = []
+    for line in raw_text.splitlines():
+        line = line.split('#')[0].strip()
+        if line:
+            clean_lines.append(line)
+            
+    return clean_lines
+
+def _extract_configs_from_string(text: str) -> Set[str]:
+    """Isolate CONFIG_ symbols from variable assignments or targets."""
+    configs = set()
+    # Normalize Makefile syntax like $(CONFIG_FOO) or CONFIG_FOO=y
+    clean_text = text.replace('$(', ' ').replace(')', ' ').replace('=', ' ')
+    for token in clean_text.split():
+        if 'CONFIG_' in token:
+            start = token.find('CONFIG_')
+            sub = token[start:]
+            cfg_chars = []
+            for char in sub:
+                if char.isalnum() or char == '_':
+                    cfg_chars.append(char)
+                else:
+                    break
+            if cfg_chars:
+                configs.add("".join(cfg_chars))
+    return configs
+
+def _parse_assignment(line: str) -> Tuple[str, List[str]]:
+    """Split a Makefile assignment into (LHS_variable, [RHS_tokens])."""
+    # Handle :=, +=, ?=, =
+    for op in (':=', '+=', '?=', '='):
+        if op in line:
+            parts = line.split(op, 1)
+            lhs = parts[0].strip()
+            rhs_tokens = parts[1].strip().split()
+            return lhs, rhs_tokens
+    return "", []
+
+def _find_configs_for_file(image_dir: str, rel_file: str) -> Set[str]:
+    """Deterministically resolve Kbuild CONFIG_ gates scoped strictly to the file's path."""
+    configs: Set[str] = set()
+
+    rel_dir = os.path.dirname(rel_file)                     # e.g., 'fs/proc' or 'security/safesetid'
+    stem = os.path.splitext(os.path.basename(rel_file))[0]  # e.g., 'base' or 'securityfs'
+    target_obj = f"{stem}.o"
+
+    # -------------------------------------------------------------
+    # 1. Scoped Local Makefile Graph Resolution
+    # -------------------------------------------------------------
+    local_makefile = os.path.join(image_dir, rel_dir, "Makefile")
+    if not os.path.exists(local_makefile):
+        local_makefile = os.path.join(image_dir, rel_dir, "Kbuild")
+
+    if os.path.exists(local_makefile):
+        lines = _get_clean_lines(local_makefile)
+        targets_to_resolve = {target_obj}
+        visited_targets = set()
+
+        while targets_to_resolve:
+            curr_target = targets_to_resolve.pop()
+            visited_targets.add(curr_target)
+
+            for line in lines:
+                lhs, rhs_tokens = _parse_assignment(line)
+                if not lhs:
+                    continue
+
+                if curr_target in rhs_tokens:
+                    # Extract CONFIG_ from both LHS (e.g. pci-$(CONFIG_SYSFS)) and RHS
+                    configs.update(_extract_configs_from_string(line))
+
+                    # Check if assigned to a composite parent (e.g. proc-y += base.o or safesetid-y := securityfs.o)
+                    if '-' in lhs:
+                        parent_stem = lhs.split('-')[0].strip()
+                        if parent_stem not in ("obj", "subdir", "core", "drivers", "libs"):
+                            p_obj = f"{parent_stem}.o"
+                            if p_obj not in visited_targets:
+                                targets_to_resolve.add(p_obj)
+
+    # -------------------------------------------------------------
+    # 2. Parent Directory Walk (Strict Path Traversal)
+    # -------------------------------------------------------------
+    curr_dir = rel_dir
+    while curr_dir and curr_dir != ".":
+        parent_dir = os.path.dirname(curr_dir)
+        folder_name = os.path.basename(curr_dir)
+        folder_tokens = {f"{folder_name}/", folder_name, f"{folder_name}.o"}
+
+        parent_makefile = os.path.join(image_dir, parent_dir, "Makefile")
+        if not os.path.exists(parent_makefile):
+            parent_makefile = os.path.join(image_dir, parent_dir, "Kbuild")
+
+        if os.path.exists(parent_makefile):
+            lines = _get_clean_lines(parent_makefile)
+            for line in lines:
+                lhs, rhs_tokens = _parse_assignment(line)
+                # Ensure folder match is exact within RHS tokens
+                if any(ft in rhs_tokens for ft in folder_tokens):
+                    configs.update(_extract_configs_from_string(line))
+
+        curr_dir = parent_dir
+
+    return configs
 
 # ── cscope helpers ────────────────────────────────────────────────────────────
 
@@ -417,7 +605,17 @@ def resolve_symbols_to_configs(
             )
 
         for rel_file in defined_files:
-            found_configs.update(_find_configs_for_file(image_dir, rel_file))
+            # 1. Standard Makefile directory-climbing walk
+            thisFunc = _find_configs_for_file(image_dir, rel_file)
+
+            # 2. Fast cscope -L6 search in indexed Makefiles (catches complex Kbuild syntax)
+            thisFunc.update(_find_configs_via_cscope_text(image_dir, rel_file))
+
+
+
+            print (spec, ":", thisFunc)
+            
+            found_configs.update(thisFunc)
 
     return sorted(found_configs)
 

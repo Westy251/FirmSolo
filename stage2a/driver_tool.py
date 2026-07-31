@@ -68,8 +68,8 @@ conf_opts = [
     "CONFIG_LTO_CLANG_FULL",
     "CONFIG_MODULES",
     "!CONFIG_COMPILE_TEST",
-] + ['CONFIG_MMU', 'CONFIG_SECCOMP', 'CONFIG_SYSFS', 'CONFIG_TIME_NS', 'CONFIG_USER_NS']  
-symbolz = [] # capFuncs 
+    ] + capable_caller_configs
+symbolz = [('pci_read_config', 'drivers/pci/pci-sysfs.c', 749)] # capFuncs 
 
 # ── Plumbing ──────────────────────────────────────────────────────────────────
 image_id = "custom_build"

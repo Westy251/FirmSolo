@@ -77,6 +77,7 @@ conf_opts = [
     "CONFIG_MODULES",
     "!CONFIG_COMPILE_TEST",
     "!CONFIG_FUNCTION_TRACER",
+    "CONFIG_KPROBE_EVENTS",
     ]
 symbolz = ["perf_kprobe_event_init"] 
 print ("conf opts: ", conf_opts)

@@ -245,31 +245,90 @@ def _parse_assignment(line: str) -> Tuple[str, List[str]]:
 ################################################
 # PARSING INSIDE FILE IFDEFS
 
-def _find_c_source_configs(image_dir: str, rel_file: str, line_no: int) -> set[str]:
-    """Scans .c file up to line_no to collect active #ifdef CONFIG_ guards."""
-    configs: set[str] = set()
+def _find_c_source_configs(
+    image_dir: str,
+    rel_file: str,
+    line_no: int,
+    sym_name: str = "",
+) -> Set[str]:
+    """
+    Scan a C/H/S source file up to *line_no* and return every CONFIG_
+    symbol whose #ifdef/#if block is still open at that point — i.e. the
+    code at *line_no* is compiled only when those symbols are enabled.
+
+    If *line_no* is 0 and *sym_name* is supplied, we do a single forward
+    scan to locate the first line containing the symbol and derive the
+    limit from that, so callers that know the file but missed the line
+    still get useful results.
+    """
+    configs: Set[str] = set()
     abs_src = os.path.join(image_dir, rel_file)
-    
-    if not os.path.exists(abs_src) or line_no <= 0:
+    if not os.path.exists(abs_src):
         return configs
 
     try:
-        with open(abs_src, "r", errors="ignore") as sf:
-            lines = sf.readlines()
+        with open(abs_src, "r", errors="ignore") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return configs
 
-        if_stack = []
-        for line in lines[:line_no]:
-            l_strip = line.strip()
-            if l_strip.startswith(("#ifdef", "#if")):
-                if_stack.append(set(re.findall(r"CONFIG_[A-Za-z0-9_]+", l_strip)))
-            elif l_strip.startswith("#endif"):
-                if if_stack:
-                    if_stack.pop()
+    # ── Fallback: locate sym_name when line_no is unknown ────────────────
+    if line_no <= 0 and sym_name:
+        for idx, text in enumerate(lines, 1):
+            if sym_name in text:
+                line_no = idx
+                break
 
-        for block_set in if_stack:
-            configs.update(block_set)
-    except Exception:
-        pass
+    if line_no <= 0:
+        return configs
+
+    # ── Walk every line up to (and including) line_no ────────────────────
+    #
+    # Each stack frame holds the set of CONFIG_ names mentioned on that
+    # conditional's header line.  Rules:
+    #   #ifdef / #if   → push frame with the listed CONFIGs
+    #   #ifndef        → push an *empty* frame (code runs when symbol is
+    #                    NOT set, so we must not add it as a requirement)
+    #   #elif          → replace the top frame (we're in a sibling branch)
+    #   #else          → replace the top frame with an empty one (no named
+    #                    condition; parent frames still apply)
+    #   #endif         → pop the top frame
+    #
+    # At the end, any frame still on the stack means we're lexically inside
+    # that conditional at line_no.
+
+    if_stack: List[Set[str]] = []
+
+    for raw in lines[:line_no]:
+        s = raw.strip()
+        if not s.startswith("#"):
+            continue
+        tokens = s[1:].split()
+        if not tokens:
+            continue
+        directive = tokens[0]
+
+        if directive in ("ifdef", "if"):
+            if_stack.append(set(re.findall(r"CONFIG_[A-Za-z0-9_]+", s)))
+        elif directive == "ifndef":
+            # Inside #ifndef the guarded symbol must be *disabled*, so we
+            # push an empty frame to keep the depth count correct without
+            # emitting a false requirement.
+            if_stack.append(set())
+        elif directive == "elif":
+            if if_stack:
+                if_stack.pop()
+            if_stack.append(set(re.findall(r"CONFIG_[A-Za-z0-9_]+", s)))
+        elif directive == "else":
+            if if_stack:
+                if_stack.pop()
+            if_stack.append(set())          # no explicit CONFIG_ condition
+        elif directive == "endif":
+            if if_stack:
+                if_stack.pop()
+
+    for frame in if_stack:
+        configs.update(frame)
 
     return configs
 
@@ -352,11 +411,17 @@ def _find_makefile_configs(image_dir: str, rel_file: str) -> set[str]:
     return configs
 
 
-def resolve_file_requirements(image_dir: str, rel_file: str, line_no: int = 0) -> set[str]:
+def resolve_file_requirements(
+    image_dir: str,
+    rel_file: str,
+    line_no: int = 0,
+    sym_name: str = "",          # ← new: forwarded to _find_c_source_configs
+) -> Set[str]:
     """Merges C preprocessor requirements (#ifdef) with Makefile build requirements."""
-    c_configs = _find_c_source_configs(image_dir, rel_file, line_no)
+    c_configs  = _find_c_source_configs(image_dir, rel_file, line_no, sym_name)
     mk_configs = _find_makefile_configs(image_dir, rel_file)
     return c_configs | mk_configs
+
 
 ################################################
 
@@ -596,9 +661,14 @@ def parse_symbol_spec(spec: SymbolSpec) -> Tuple[str, Optional[str], Optional[in
 # ── CONFIG resolution ─────────────────────────────────────────────────────────
 
 
-def resolve_symbols_to_configs(image_dir: str, symbols: List[Union[str, tuple]], exclude_dirs: List[str]) -> List[str]:
-    found_configs = set()
-    cscope_db = os.path.join(image_dir, "cscope.out")
+def resolve_symbols_to_configs(
+    image_dir: str,
+    symbols: List[Any],
+    exclude_dirs: List[str],
+) -> List[str]:
+    found_configs: Set[str] = set()
+    cscope_db  = os.path.join(image_dir, "cscope.out")
+    real_image = os.path.realpath(image_dir)   # computed once; reused below
 
     if not symbols:
         return []
@@ -607,25 +677,24 @@ def resolve_symbols_to_configs(image_dir: str, symbols: List[Union[str, tuple]],
         if not item:
             continue
 
-        # 1. Unpack tuples or raw symbol strings
+        # ── 1. Unpack tuple/list specs or bare symbol strings ─────────────
         if isinstance(item, (tuple, list)):
-            sym_name = item[0]
+            sym_name      = item[0]
             provided_file = item[1] if len(item) > 1 else None
             provided_line = item[2] if len(item) > 2 else 0
         else:
-            sym_name = item
+            sym_name      = item
             provided_file = None
             provided_line = 0
 
-        # Clean compiler optimization suffixes from the symbol string name
         clean_sym = re.sub(r"\.(isra|constprop|part)\.\d+", "", str(sym_name)).strip()
-        defined_targets = set()
+        defined_targets: Set[Tuple[str, int]] = set()
 
-        # 2. Use direct path/line if present in tuple; otherwise fallback to cscope lookup
+        # ── 2. Direct path/line wins; otherwise fall back to cscope ───────
         if provided_file:
             defined_targets.add((provided_file, provided_line))
         elif os.path.exists(cscope_db):
-            for flag in ["-L1", "-L0"]:
+            for flag in ("-L1", "-L0"):
                 try:
                     res = subprocess.run(
                         ["cscope", "-d", "-f", cscope_db, flag, clean_sym],
@@ -636,32 +705,47 @@ def resolve_symbols_to_configs(image_dir: str, symbols: List[Union[str, tuple]],
                     )
                     for line in res.stdout.strip().splitlines():
                         parts = line.split()
-                        if len(parts) >= 3:
-                            abs_or_rel = parts[0]
-                            line_str = parts[2]
-                            rel_file = os.path.relpath(abs_or_rel, image_dir)
-                            if rel_file.endswith((".c", ".h", ".S")):
-                                try:
-                                    line_no = int(line_str)
-                                except ValueError:
-                                    line_no = 0
-                                defined_targets.add((rel_file, line_no))
+                        if len(parts) < 3:
+                            continue
+                        raw_path = parts[0]
+                        line_str = parts[2]
+
+                        # ── Path normalisation fix ─────────────────────────
+                        # cscope runs with cwd=image_dir, so its output paths
+                        # are relative to image_dir.  Calling
+                        # os.path.relpath(relative, absolute_dir) anchors the
+                        # relative path to the *process* CWD instead — wrong.
+                        # Use os.path.join to anchor to image_dir first.
+                        if os.path.isabs(raw_path):
+                            absp = os.path.realpath(raw_path)
+                        else:
+                            absp = os.path.realpath(
+                                os.path.join(real_image, raw_path)
+                            )
+                        rel_file = os.path.relpath(absp, real_image)
+
+                        if rel_file.endswith((".c", ".h", ".S")):
+                            try:
+                                line_no = int(line_str)
+                            except ValueError:
+                                line_no = 0
+                            defined_targets.add((rel_file, line_no))
+
                     if defined_targets:
                         break
-                except Exception as e:
-                    print(f"  [cscope] Query error for '{clean_sym}': {e}")
+                except Exception as exc:
+                    print(f"  [cscope] Query error for '{clean_sym}': {exc}")
 
-        # 3. Resolve Makefile & C-preprocessor requirements for each target
+        # ── 3. Resolve Makefile + C-preprocessor requirements ─────────────
         for rel_file, line_no in defined_targets:
-
-            
-            if rel_file.startswith(tuple(exclude_dirs)):
+            if exclude_dirs and rel_file.startswith(tuple(exclude_dirs)):
                 continue
-
-            reqs = resolve_file_requirements(image_dir, rel_file, line_no)
+            reqs = resolve_file_requirements(
+                image_dir, rel_file, line_no, clean_sym   # ← pass sym_name
+            )
             found_configs.update(reqs)
 
-    return sorted(list(found_configs))
+    return sorted(found_configs)
 
 def find_caller_configs(image_dir: str, target_symbol: str) -> List[str]:
     """Return CONFIG options needed to compile every caller of *target_symbol*.

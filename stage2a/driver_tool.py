@@ -40,6 +40,7 @@ endianess = "little"
 # (For ARM/MIPS firmware analysis this would contain e.g. ["ARMv7", "p2v8"])
 ver_magicz: list = []
 
+'''
 capable_caller_configs, capCallsites = [[], []]
 for i in range (7):
     capable_caller_configs += find_caller_configs("./../../../../output/kernel_dirs/linux-6.18/", f"SYSCALL_DEFINE{i}")
@@ -48,7 +49,7 @@ print(capable_caller_configs)
 for capability in capabilities:
     capCallsites += find_caller_configs("./../../../../output/kernel_dirs/linux-6.18/", capability)
 print (capCallsites)
-
+'''
 
 # ── Toolchain ─────────────────────────────────────────────────────────────────
 cross_compiler = cu.get_toolchain(cu.kernel_prefix + kernel_version, arch, endianess)
@@ -71,13 +72,13 @@ print("=" * 60)
 
 # ── Symbols / CONFIG options to enable ───────────────────────────────────────
 # KCRE automatically resolves all upstream Kconfig dependencies.
-conf_opts = capable_caller_configs + capCallsites + [
+conf_opts = [
     "CONFIG_LTO_CLANG_FULL",
     "CONFIG_MODULES",
     "!CONFIG_COMPILE_TEST",
     "!CONFIG_FUNCTION_TRACER",
     ]
-symbolz = capFuncs 
+symbolz = ["perf_kprobe_event_init"] 
 print ("conf opts: ", conf_opts)
 # ── Plumbing ──────────────────────────────────────────────────────────────────
 image_id = "custom_build"
@@ -90,6 +91,7 @@ ds_recovery = 0
 single_module_dir = ""
 s_config = "yes"
 openwrt = False
+exclude_dirs = ["drivers/"]
 
 # ── Launch ────────────────────────────────────────────────────────────────────
 compile_kernel(
@@ -110,4 +112,5 @@ compile_kernel(
     conf_opts,
     guard_expr,
     module_options,
+    exclude_dirs,
 )

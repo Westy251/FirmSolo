@@ -596,7 +596,7 @@ def parse_symbol_spec(spec: SymbolSpec) -> Tuple[str, Optional[str], Optional[in
 # ── CONFIG resolution ─────────────────────────────────────────────────────────
 
 
-def resolve_symbols_to_configs(image_dir: str, symbols: List[Union[str, tuple]]) -> List[str]:
+def resolve_symbols_to_configs(image_dir: str, symbols: List[Union[str, tuple]], exclude_dirs: List[str]) -> List[str]:
     found_configs = set()
     cscope_db = os.path.join(image_dir, "cscope.out")
 
@@ -653,6 +653,11 @@ def resolve_symbols_to_configs(image_dir: str, symbols: List[Union[str, tuple]])
 
         # 3. Resolve Makefile & C-preprocessor requirements for each target
         for rel_file, line_no in defined_targets:
+
+            
+            if rel_file.startswith(tuple(exclude_dirs)):
+                continue
+
             reqs = resolve_file_requirements(image_dir, rel_file, line_no)
             found_configs.update(reqs)
 
@@ -1119,6 +1124,7 @@ def compile_kernel(
     conf_opts:         List[str],
     guard_expr:        List[str],
     module_options:    List[str],
+    exclude_dirs:      List[str],
 ) -> int:
     kernel       = cu.kernel_prefix + kernel
     resultdir    = cu.result_dir_path + image + "/"
@@ -1155,7 +1161,7 @@ def compile_kernel(
 
         find_and_cscope(image_dir, arch)
 
-        resolved = resolve_symbols_to_configs(image_dir, symbolz)
+        resolved = resolve_symbols_to_configs(image_dir, symbolz, exclude_dirs)
         for cfg in resolved:
             if cfg not in ds_options:
                 ds_options.append(cfg)

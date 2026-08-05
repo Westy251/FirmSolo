@@ -322,20 +322,45 @@ def _find_makefile_configs(image_dir: str, rel_file: str) -> set[str]:
             with open(local_mk, "r", errors="ignore") as f:
                 content = re.sub(r'\\\s*\n', ' ', f.read().replace('\r\n', '\n'))
 
-            # Pass 1: Identify composite parent objects (e.g., sd.o -> sd_mod.o)
+            # Pass 1: Identify composite parent objects (e.g., md.o -> md-mod.o, sd.o -> sd_mod.o)
             targets_to_check = {target_obj, stem}
-            for line in content.splitlines():
-                line_clean = line.split('#')[0].strip()
-                if '=' not in line_clean:
-                    continue
-                op_pos = min(line_clean.find(op) for op in (':=', '+=', '?=', '=') if op in line_clean)
-                lhs = line_clean[:op_pos].strip()
-                rhs_tokens = set(line_clean[op_pos:].strip().split())
+            added = True
+            while added:
+                added = False
+                for line in content.splitlines():
+                    line_clean = line.split('#')[0].strip()
+                    if '=' not in line_clean:
+                        continue
+                    op_pos = min(line_clean.find(op) for op in (':=', '+=', '?=', '=') if op in line_clean)
+                    lhs = line_clean[:op_pos].strip()
 
-                if (target_obj in rhs_tokens or stem in rhs_tokens) and '-' in lhs:
-                    p_stem, suffix = lhs.split('-', 1)
-                    if suffix.strip() in ('y', 'objs', 'm'):
-                        targets_to_check.add(f"{p_stem.strip()}.o")
+                    # Ignore obj- targets during composite parent mapping
+                    if lhs.startswith("obj-"):
+                        continue
+
+                    rhs_tokens = {
+                        t.strip('"\',()')
+                        for t in line_clean[op_pos:].strip().split()
+                        if t not in (':=', '+=', '?=', '=')
+                    }
+
+                    if any(t in rhs_tokens for t in targets_to_check) and '-' in lhs:
+                        # FIX: rsplit at the LAST dash so "md-mod-y" -> "md-mod", "y"
+                        p_stem, suffix = lhs.rsplit('-', 1)
+                        p_stem = p_stem.strip()
+                        suffix = suffix.strip()
+
+                        if (
+                            suffix in ('y', 'objs', 'm')
+                            or suffix.startswith('y')
+                            or suffix.startswith('m')
+                            or suffix.startswith('$(')
+                        ):
+                            parent_obj = f"{p_stem}.o"
+                            if parent_obj not in targets_to_check:
+                                targets_to_check.add(parent_obj)
+                                targets_to_check.add(p_stem)
+                                added = True
 
             # Pass 2: Extract CONFIG_ gates for target or composite parent
             mk_if_stack = []
@@ -357,7 +382,11 @@ def _find_makefile_configs(image_dir: str, rel_file: str) -> set[str]:
 
                 op_pos = min(line_clean.find(op) for op in (':=', '+=', '?=', '=') if op in line_clean)
                 lhs = line_clean[:op_pos].strip()
-                rhs_tokens = set(line_clean[op_pos:].strip().split())
+                rhs_tokens = {
+                    t.strip('"\',()')
+                    for t in line_clean[op_pos:].strip().split()
+                    if t not in (':=', '+=', '?=', '=')
+                }
 
                 if any(t in rhs_tokens for t in targets_to_check):
                     configs.update(re.findall(r'CONFIG_[A-Za-z0-9_]+', lhs))
@@ -366,7 +395,7 @@ def _find_makefile_configs(image_dir: str, rel_file: str) -> set[str]:
         except Exception:
             pass
 
-    # Parent Directory Climber (Resolves drivers/Makefile -> obj-$(CONFIG_SCSI) += scsi/)
+    # Parent Directory Climber (Resolves drivers/Makefile -> obj-$(CONFIG_MD) += md/)
     curr_dir = rel_dir
     while curr_dir and curr_dir != ".":
         parent_dir = os.path.dirname(curr_dir)
@@ -387,7 +416,11 @@ def _find_makefile_configs(image_dir: str, rel_file: str) -> set[str]:
                     if '=' in line_clean:
                         op_pos = min(line_clean.find(op) for op in (':=', '+=', '?=', '=') if op in line_clean)
                         lhs = line_clean[:op_pos].strip()
-                        rhs_tokens = set(line_clean[op_pos:].strip().split())
+                        rhs_tokens = {
+                            t.strip('"\',()')
+                            for t in line_clean[op_pos:].strip().split()
+                            if t not in (':=', '+=', '?=', '=')
+                        }
                         if any(ft in rhs_tokens for ft in folder_tokens):
                             configs.update(re.findall(r'CONFIG_[A-Za-z0-9_]+', lhs))
             except Exception:
@@ -396,7 +429,6 @@ def _find_makefile_configs(image_dir: str, rel_file: str) -> set[str]:
         curr_dir = parent_dir
 
     return configs
-
 def resolve_file_requirements(
     image_dir: str,
     rel_file: str,
@@ -654,16 +686,24 @@ def resolve_symbols_to_configs(
 ) -> List[str]:
     found_configs: Set[str] = set()
     cscope_db  = os.path.join(image_dir, "cscope.out")
-    real_image = os.path.realpath(image_dir)   # computed once; reused below
+    real_image = os.path.realpath(image_dir)
 
     if not symbols:
         return []
+
+    # Normalize exclude_dirs with trailing slashes
+    norm_exclude = []
+    if exclude_dirs:
+        for d in exclude_dirs:
+            d_clean = d.strip()
+            if d_clean and not d_clean.endswith(os.sep):
+                d_clean += os.sep
+            norm_exclude.append(d_clean)
 
     for item in symbols:
         if not item:
             continue
 
-        # ── 1. Unpack tuple/list specs or bare symbol strings ─────────────
         if isinstance(item, (tuple, list)):
             sym_name      = item[0]
             provided_file = item[1] if len(item) > 1 else None
@@ -676,10 +716,13 @@ def resolve_symbols_to_configs(
         clean_sym = re.sub(r"\.(isra|constprop|part)\.\d+", "", str(sym_name)).strip()
         defined_targets: Set[Tuple[str, int]] = set()
 
-        # ── 2. Direct path/line wins; otherwise fall back to cscope ───────
         if provided_file:
-            defined_targets.add((provided_file, provided_line))
+            absp = os.path.realpath(provided_file if os.path.isabs(provided_file) else os.path.join(real_image, provided_file))
+            defined_targets.add((os.path.relpath(absp, real_image), provided_line))
+
         elif os.path.exists(cscope_db):
+            raw_cscope_hits: Set[Tuple[str, int]] = set()
+
             for flag in ("-L1", "-L0"):
                 try:
                     res = subprocess.run(
@@ -693,21 +736,9 @@ def resolve_symbols_to_configs(
                         parts = line.split()
                         if len(parts) < 3:
                             continue
-                        raw_path = parts[0]
-                        line_str = parts[2]
+                        raw_path, line_str = parts[0], parts[2]
 
-                        # ── Path normalisation fix ─────────────────────────
-                        # cscope runs with cwd=image_dir, so its output paths
-                        # are relative to image_dir.  Calling
-                        # os.path.relpath(relative, absolute_dir) anchors the
-                        # relative path to the *process* CWD instead — wrong.
-                        # Use os.path.join to anchor to image_dir first.
-                        if os.path.isabs(raw_path):
-                            absp = os.path.realpath(raw_path)
-                        else:
-                            absp = os.path.realpath(
-                                os.path.join(real_image, raw_path)
-                            )
+                        absp = os.path.realpath(raw_path if os.path.isabs(raw_path) else os.path.join(real_image, raw_path))
                         rel_file = os.path.relpath(absp, real_image)
 
                         if rel_file.endswith((".c", ".h", ".S")):
@@ -715,20 +746,33 @@ def resolve_symbols_to_configs(
                                 line_no = int(line_str)
                             except ValueError:
                                 line_no = 0
-                            defined_targets.add((rel_file, line_no))
+                            raw_cscope_hits.add((rel_file, line_no))
 
-                    if defined_targets:
+                    # Fix: Only stop cscope loop if we hit actual .c or .S implementation files
+                    if any(f.endswith((".c", ".S")) for f, _ in raw_cscope_hits):
                         break
+
                 except Exception as exc:
                     print(f"  [cscope] Query error for '{clean_sym}': {exc}")
 
-        # ── 3. Resolve Makefile + C-preprocessor requirements ─────────────
+            # Prioritize implementation source files
+            c_s_targets = {(f, l) for f, l in raw_cscope_hits if f.endswith((".c", ".S"))}
+            if c_s_targets:
+                defined_targets.update(c_s_targets)
+            else:
+                # Header fallback: map stem.h -> stem.c in source tree
+                for h_file, _ in {(f, l) for f, l in raw_cscope_hits if f.endswith(".h")}:
+                    stem = os.path.splitext(os.path.basename(h_file))[0]
+                    for root, _, files in os.walk(real_image):
+                        if f"{stem}.c" in files:
+                            matched_abs = os.path.join(root, f"{stem}.c")
+                            defined_targets.add((os.path.relpath(matched_abs, real_image), 0))
+
+        # Resolve Makefile & CPP requirements
         for rel_file, line_no in defined_targets:
-            if exclude_dirs and rel_file.startswith(tuple(exclude_dirs)):
+            if norm_exclude and any(rel_file.startswith(ex) for ex in norm_exclude):
                 continue
-            reqs = resolve_file_requirements(
-                image_dir, rel_file, line_no, clean_sym   # ← pass sym_name
-            )
+            reqs = resolve_file_requirements(image_dir, rel_file, line_no, clean_sym)
             found_configs.update(reqs)
 
     return sorted(found_configs)

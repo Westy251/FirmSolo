@@ -686,20 +686,22 @@ class Image:
             self.set_option_value(sym.name, value, overwrite)
             return
 
-        # Step 5: Handle promptless / invisible symbols
-        if expr_value(sym.direct_dep) >= (value if isinstance(value, int) else 2) or expr_value(sym.direct_dep) > 0:
-            print("Direct deps met for unprompted symbol {}, forcing value {}".format(sym.name, value))
-            self.set_option_value(sym.name, value, overwrite)
-        else:
-            # Step 6: Fall back to reverse dependencies (select)
-            print("Direct deps failed for {}, trying reverse deps".format(sym.name))
-            self.set_undefined_option(sym, value, overwrite)
+        # Step 5 / 6: Handle promptless / invisible vs. visible symbols
+        has_prompt = any(node.prompt for node in sym.nodes) if sym.nodes else False
 
-        if sym.choice:
-            parent = sym.choice
-            for s in parent.syms:
-                if s is not parent.user_selection and s.visibility:
-                    self.set_option_value(s.name, 0, overwrite)
+        if not has_prompt:
+            # Promptless symbol: user_value assignment is ignored by Kconfig.
+            # We MUST enable a parent symbol via reverse dependencies (select).
+            print("Symbol {} is promptless; resolving via reverse dependencies".format(sym.name))
+            self.set_undefined_option(sym, value, overwrite)
+        else:
+            # Visible symbol fallback (preserves original behavior for visible options)
+            if expr_value(sym.direct_dep) >= (value if isinstance(value, int) else 2) or expr_value(sym.direct_dep) > 0:
+                print("Direct deps met for unprompted symbol {}, forcing value {}".format(sym.name, value))
+                self.set_option_value(sym.name, value, overwrite)
+            else:
+                print("Direct deps failed for {}, trying reverse deps".format(sym.name))
+                self.set_undefined_option(sym, value, overwrite)
 
     def set_undefined_option(self, opt, value, overwrite=False):
         if (opt.type != TRISTATE and value == 1) or opt.name not in self.kconf.syms:

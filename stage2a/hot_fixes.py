@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 hot_fixes.py – source-level patches applied to the extracted kernel tree
 before kconfiglib processing and compilation.

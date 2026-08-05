@@ -77,9 +77,8 @@ conf_opts = [
     "CONFIG_MODULES",
     "!CONFIG_COMPILE_TEST",
     "!CONFIG_FUNCTION_TRACER",
-    "CONFIG_KPROBE_EVENTS",
     ]
-symbolz = ["perf_kprobe_event_init"] 
+symbolz = capFuncs
 print ("conf opts: ", conf_opts)
 # ── Plumbing ──────────────────────────────────────────────────────────────────
 image_id = "custom_build"
@@ -92,7 +91,7 @@ ds_recovery = 0
 single_module_dir = ""
 s_config = "yes"
 openwrt = False
-exclude_dirs = ["drivers/"]
+exclude_dirs = [] #["drivers/"]
 
 # ── Launch ────────────────────────────────────────────────────────────────────
 compile_kernel(

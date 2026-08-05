@@ -251,16 +251,6 @@ def _find_c_source_configs(
     line_no: int,
     sym_name: str = "",
 ) -> Set[str]:
-    """
-    Scan a C/H/S source file up to *line_no* and return every CONFIG_
-    symbol whose #ifdef/#if block is still open at that point — i.e. the
-    code at *line_no* is compiled only when those symbols are enabled.
-
-    If *line_no* is 0 and *sym_name* is supplied, we do a single forward
-    scan to locate the first line containing the symbol and derive the
-    limit from that, so callers that know the file but missed the line
-    still get useful results.
-    """
     configs: Set[str] = set()
     abs_src = os.path.join(image_dir, rel_file)
     if not os.path.exists(abs_src):
@@ -268,34 +258,21 @@ def _find_c_source_configs(
 
     try:
         with open(abs_src, "r", errors="ignore") as fh:
-            lines = fh.readlines()
+            raw_text = fh.read().replace('\\\n', ' ')
+            lines = raw_text.splitlines()
     except OSError:
         return configs
 
-    # ── Fallback: locate sym_name when line_no is unknown ────────────────
-    if line_no <= 0 and sym_name:
+    # Locate actual function/symbol definition line if line_no is invalid or pointing to a call-site
+    if sym_name:
+        def_pattern = re.compile(rf"\b{re.escape(sym_name)}\b\s*\(")
         for idx, text in enumerate(lines, 1):
-            if sym_name in text:
+            if def_pattern.search(text):
                 line_no = idx
                 break
 
     if line_no <= 0:
         return configs
-
-    # ── Walk every line up to (and including) line_no ────────────────────
-    #
-    # Each stack frame holds the set of CONFIG_ names mentioned on that
-    # conditional's header line.  Rules:
-    #   #ifdef / #if   → push frame with the listed CONFIGs
-    #   #ifndef        → push an *empty* frame (code runs when symbol is
-    #                    NOT set, so we must not add it as a requirement)
-    #   #elif          → replace the top frame (we're in a sibling branch)
-    #   #else          → replace the top frame with an empty one (no named
-    #                    condition; parent frames still apply)
-    #   #endif         → pop the top frame
-    #
-    # At the end, any frame still on the stack means we're lexically inside
-    # that conditional at line_no.
 
     if_stack: List[Set[str]] = []
 
@@ -311,9 +288,6 @@ def _find_c_source_configs(
         if directive in ("ifdef", "if"):
             if_stack.append(set(re.findall(r"CONFIG_[A-Za-z0-9_]+", s)))
         elif directive == "ifndef":
-            # Inside #ifndef the guarded symbol must be *disabled*, so we
-            # push an empty frame to keep the depth count correct without
-            # emitting a false requirement.
             if_stack.append(set())
         elif directive == "elif":
             if if_stack:
@@ -322,7 +296,7 @@ def _find_c_source_configs(
         elif directive == "else":
             if if_stack:
                 if_stack.pop()
-            if_stack.append(set())          # no explicit CONFIG_ condition
+            if_stack.append(set())
         elif directive == "endif":
             if if_stack:
                 if_stack.pop()
@@ -332,15 +306,13 @@ def _find_c_source_configs(
 
     return configs
 
-
 def _find_makefile_configs(image_dir: str, rel_file: str) -> set[str]:
-    """Traverses local & parent Makefiles with strict RHS matching and conditional stacking."""
+    """Traverses local & parent Makefiles with composite object mapping and conditional stacking."""
     configs: set[str] = set()
     rel_dir = os.path.dirname(rel_file)
     stem = os.path.splitext(os.path.basename(rel_file))[0]
     target_obj = f"{stem}.o"
 
-    # Local Makefile Parsing
     local_mk = os.path.join(image_dir, rel_dir, "Makefile")
     if not os.path.exists(local_mk):
         local_mk = os.path.join(image_dir, rel_dir, "Kbuild")
@@ -350,6 +322,22 @@ def _find_makefile_configs(image_dir: str, rel_file: str) -> set[str]:
             with open(local_mk, "r", errors="ignore") as f:
                 content = re.sub(r'\\\s*\n', ' ', f.read().replace('\r\n', '\n'))
 
+            # Pass 1: Identify composite parent objects (e.g., sd.o -> sd_mod.o)
+            targets_to_check = {target_obj, stem}
+            for line in content.splitlines():
+                line_clean = line.split('#')[0].strip()
+                if '=' not in line_clean:
+                    continue
+                op_pos = min(line_clean.find(op) for op in (':=', '+=', '?=', '=') if op in line_clean)
+                lhs = line_clean[:op_pos].strip()
+                rhs_tokens = set(line_clean[op_pos:].strip().split())
+
+                if (target_obj in rhs_tokens or stem in rhs_tokens) and '-' in lhs:
+                    p_stem, suffix = lhs.split('-', 1)
+                    if suffix.strip() in ('y', 'objs', 'm'):
+                        targets_to_check.add(f"{p_stem.strip()}.o")
+
+            # Pass 2: Extract CONFIG_ gates for target or composite parent
             mk_if_stack = []
             for line in content.splitlines():
                 line_clean = line.split('#')[0].strip()
@@ -371,15 +359,14 @@ def _find_makefile_configs(image_dir: str, rel_file: str) -> set[str]:
                 lhs = line_clean[:op_pos].strip()
                 rhs_tokens = set(line_clean[op_pos:].strip().split())
 
-                # Strict target matching (prevents substring matches like resource_kunit.o)
-                if target_obj in rhs_tokens or stem in rhs_tokens:
+                if any(t in rhs_tokens for t in targets_to_check):
                     configs.update(re.findall(r'CONFIG_[A-Za-z0-9_]+', lhs))
                     for block_set in mk_if_stack:
                         configs.update(block_set)
         except Exception:
             pass
 
-    # Parent Directory Climber (Directory Gates)
+    # Parent Directory Climber (Resolves drivers/Makefile -> obj-$(CONFIG_SCSI) += scsi/)
     curr_dir = rel_dir
     while curr_dir and curr_dir != ".":
         parent_dir = os.path.dirname(curr_dir)
@@ -409,7 +396,6 @@ def _find_makefile_configs(image_dir: str, rel_file: str) -> set[str]:
         curr_dir = parent_dir
 
     return configs
-
 
 def resolve_file_requirements(
     image_dir: str,

@@ -82,7 +82,7 @@ conf_opts = capable_caller_configs + [
     "!CONFIG_COMPILE_TEST",
     "!CONFIG_FUNCTION_TRACER",
     ]
-symbolz = ["security_capable"] + capFuncs # Injecting security_capable to make sure we get SECURITY
+symbolz = ["sysctl_schedstats"] #+ capFuncs # Injecting security_capable to make sure we get SECURITY
 print ("conf opts: ", conf_opts)
 # ── Plumbing ──────────────────────────────────────────────────────────────────
 image_id = "custom_build"

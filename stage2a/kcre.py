@@ -717,11 +717,12 @@ class Image:
             and_break = self.split_expr(subexpr, AND)
             for term in and_break:
                 if isinstance(term, tuple):
+                    # Fulfill expressions embedded in reverse dependencies (e.g. EQUAL checks)
+                    if value > 0 and expr_value(term) < value:
+                        self.fulfill_dep(term, value)
                     if expr_value(term) == 0:
                         break
-                    else:
-                        continue
-                elif isinstance(term, (Symbol, Choice)):
+                elif isinstance(term, (Symbol, Choice)) and term.name:
                     print(
                         "Looking at rev dep of",
                         opt.name,
@@ -730,48 +731,12 @@ class Image:
                         "with_value",
                         term.tri_value,
                     )
-                    if (
-                        term.tri_value > 0
-                        and value > 0
-                        and value != term.tri_value
-                        and opt.tri_value != value
-                    ):
-                        if not term.name:
-                            continue
-                        self.set_option_value(term.name, value, overwrite)
-                        if term.tri_value != value:
-                            self.set_undefined_option(term, value, overwrite)
-                        if expr_value(subexpr) > 0:
-                            break
-                    elif (
-                        expr_value(term.direct_dep) >= 0
-                        and term.tri_value == 0
-                        and value == 1
-                    ):
-                        if not term.name:
-                            continue
-                        self.set_option_value(term.name, value, overwrite)
-                        if term.tri_value != value:
-                            self.set_undefined_option(term, value, overwrite)
-                        if expr_value(subexpr) > 0:
-                            break
-                    elif (
-                        expr_value(term.direct_dep) > 0
-                        and term.tri_value == 0
-                        and value > 0
-                    ):
-                        if value in term.assignable:
-                            self.set_option_value(term.name, value, overwrite)
-                        else:
-                            self.set_option_value(
-                                term.name, expr_value(term.direct_dep)
-                            )
-                    elif (
-                        expr_value(term.direct_dep) > 0
-                        and term.tri_value > 0
-                        and value == 0
-                    ):
-                        if term.name and term.name in ("NET", "INET"):
+                    if value > 0:
+                        # Delegate to set_option to ensure term's direct_dep and prompts are fulfilled
+                        if term.tri_value < value:
+                            self.set_option(term.name, value, overwrite)
+                    else:
+                        if term.name in ("NET", "INET"):
                             continue
                         if value in term.assignable:
                             term.set_value(value)
@@ -781,9 +746,10 @@ class Image:
                         if term.tri_value != value:
                             self.set_undefined_option(term, value, True)
 
-                if opt.tri_value == value:
-                    print("Value of", opt.name, "is", opt.tri_value, "...Returning")
-                    return
+            # Check if this branch successfully satisfied the promptless/undefined target
+            if opt.tri_value == value:
+                print("Value of", opt.name, "is", opt.tri_value, "...Returning")
+                return
 
         if opt.visibility > 0:
             self.set_option_value(opt.name, value, overwrite)

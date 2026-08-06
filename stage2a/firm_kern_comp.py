@@ -599,7 +599,9 @@ def _cscope_find_definition_files(
     """
     clean_sym  = _GCC_CLONE_RE.sub("", sym).strip()
     real_image = os.path.realpath(image_dir)
-    found: Set[str] = set()
+    
+    # Track (relative_path, line_number) tuples instead of plain file strings
+    found: Set[Tuple[str, int]] = set()
 
     for flag in ("-L1", "-L0"):
         try:
@@ -609,6 +611,7 @@ def _cscope_find_definition_files(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+
             )
         except OSError as exc:
             print(f"  [cscope] Cannot run cscope: {exc}")
@@ -619,7 +622,7 @@ def _cscope_find_definition_files(
             if len(parts) < 3:
                 continue
 
-            raw  = parts[0]
+            raw, line_str = parts[0], parts[2]
             absp = raw if os.path.isabs(raw) else os.path.realpath(os.path.join(real_image, raw))
             rel  = os.path.relpath(absp, real_image)
 
@@ -627,20 +630,63 @@ def _cscope_find_definition_files(
                 continue
             if file_hint and not os.path.normpath(rel).endswith(os.path.normpath(file_hint)):
                 continue
-            if line_hint is not None:
-                try:
-                    if abs(int(parts[2]) - line_hint) > 50:
-                        continue
-                except ValueError:
-                    pass
 
-            found.add(rel)
+            try:
+                line_no = int(line_str)
+            except ValueError:
+                continue
 
-        if found:
-            break
+            if line_hint is not None and abs(line_no - line_hint) > 50:
+                continue
+
+            # Store both the path AND the line number
+            found.add((rel, line_no))
+
+        # Process static references if -L1 returned results
+        if found and flag == "-L1":
+            extra_static_lines: Set[Tuple[str, int]] = set()
+
+            for rel_file, def_line in list(found):
+                abs_file = os.path.join(real_image, rel_file)
+                
+                # Check if the definition line contains 'static'
+                is_static = False
+                if os.path.exists(abs_file):
+                    try:
+                        with open(abs_file, "r", encoding="utf-8", errors="ignore") as f:
+                            lines = f.readlines()
+                            if 0 <= def_line - 1 < len(lines) and "static " in lines[def_line - 1]:
+                                is_static = True
+                    except Exception:
+                        pass
+
+                # If static, perform in-file -L0 search to collect struct/table assignment lines
+                if is_static:
+                    res_l0 = subprocess.run(
+                        ["cscope", "-d", "-f", cscope_db, "-L0", clean_sym],
+                        cwd=image_dir,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                    for l0_line in res_l0.stdout.splitlines():
+                        l0_parts = l0_line.split(maxsplit=3)
+                        if len(l0_parts) >= 3:
+                            l0_raw, l0_line_str = l0_parts[0], l0_parts[2]
+                            l0_absp = l0_raw if os.path.isabs(l0_raw) else os.path.realpath(os.path.join(real_image, l0_raw))
+                            l0_rel = os.path.relpath(l0_absp, real_image)
+                            
+                            # Restrict references strictly to the same source file
+                            if l0_rel == rel_file:
+                                try:
+                                    extra_static_lines.add((l0_rel, int(l0_line_str)))
+                                except ValueError:
+                                    pass
+
+            found.update(extra_static_lines)
+            break  # Exit loop after processing -L1 and its static references
 
     return found
-
 
 # ── Symbol spec normalisation ─────────────────────────────────────────────────
 

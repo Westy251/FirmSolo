@@ -272,7 +272,7 @@ capFuncs = [
 "proc_bus_pci_mmap",
 "pci_read_config",
 "msi_bus_store",
-"enable_store",
+# "enable_store", # Processed at the granular level as there are several functions with this name and it breaks the tool to generically inclide 'em all
 "numa_node_store",
 "reset_subordinate_store",
 "tty_ioctl",

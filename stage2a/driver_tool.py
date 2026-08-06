@@ -26,7 +26,7 @@ os.environ["CC"] = "clang"
 sys.path.insert(0, currentdir)
 
 import custom_utils as cu
-from firm_kern_comp import compile_kernel, find_caller_configs
+from firm_kern_comp import compile_kernel, find_caller_configs, resolve_symbols_to_configs
 from capCheckingFunctions import capFuncs, capabilities
 
 
@@ -40,12 +40,16 @@ endianess = "little"
 # (For ARM/MIPS firmware analysis this would contain e.g. ["ARMv7", "p2v8"])
 ver_magicz: list = []
 
-'''
-capable_caller_configs, capCallsites = [[], []]
-for i in range (7):
-    capable_caller_configs += find_caller_configs("./../../../../output/kernel_dirs/linux-6.18/", f"SYSCALL_DEFINE{i}")
-print(capable_caller_configs)
 
+capable_caller_configs, capCallsites = [[], []]
+'''
+for i in range (7):
+    capable_caller_configs += find_caller_configs("./../../../../output/kernel_dirs/linux-6.18/", f"SYSCALL_DEFINE{i}", [])
+'''
+capable_caller_configs += resolve_symbols_to_configs("./../../../../output/kernel_dirs/linux-6.18/", ('enable_store', 'drivers/pci/pci-sysfs.c', 323), []) 
+
+print(capable_caller_configs)
+'''
 for capability in capabilities:
     capCallsites += find_caller_configs("./../../../../output/kernel_dirs/linux-6.18/", capability)
 print (capCallsites)
@@ -72,13 +76,13 @@ print("=" * 60)
 
 # ── Symbols / CONFIG options to enable ───────────────────────────────────────
 # KCRE automatically resolves all upstream Kconfig dependencies.
-conf_opts = [
+conf_opts = capable_caller_configs + [
     "CONFIG_LTO_CLANG_FULL",
     "CONFIG_MODULES",
     "!CONFIG_COMPILE_TEST",
     "!CONFIG_FUNCTION_TRACER",
     ]
-symbolz = capFuncs
+symbolz = [] # capFuncs
 print ("conf opts: ", conf_opts)
 # ── Plumbing ──────────────────────────────────────────────────────────────────
 image_id = "custom_build"

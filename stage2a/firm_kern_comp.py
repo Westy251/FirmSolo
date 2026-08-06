@@ -777,7 +777,7 @@ def resolve_symbols_to_configs(
 
     return sorted(found_configs)
 
-def find_caller_configs(image_dir: str, target_symbol: str) -> List[str]:
+def find_caller_configs(image_dir: str, target_symbol: str, exclude_dirs: List[str]) -> List[str]:
     """Return CONFIG options needed to compile every caller of *target_symbol*.
 
     Tries cscope ``-L3`` (functions that call the symbol) first; falls back
@@ -839,7 +839,7 @@ def find_caller_configs(image_dir: str, target_symbol: str) -> List[str]:
     print(f"Found {len(caller_specs)} sites referencing '{target_symbol}'. Resolving configs…")
     for spec in caller_specs:
         print(spec)
-    return resolve_symbols_to_configs(image_dir, caller_specs)
+    return resolve_symbols_to_configs(image_dir, caller_specs, exclude_dirs)
 
 
 # ── Kernel source / build helpers ─────────────────────────────────────────────

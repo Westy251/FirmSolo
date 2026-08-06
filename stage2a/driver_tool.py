@@ -42,11 +42,11 @@ ver_magicz: list = []
 
 
 capable_caller_configs, capCallsites = [[], []]
-'''
+
 for i in range (7):
     capable_caller_configs += find_caller_configs("./../../../../output/kernel_dirs/linux-6.18/", f"SYSCALL_DEFINE{i}", [])
-'''
-capable_caller_configs += resolve_symbols_to_configs("./../../../../output/kernel_dirs/linux-6.18/", ('enable_store', 'drivers/pci/pci-sysfs.c', 323), []) 
+
+#capable_caller_configs += resolve_symbols_to_configs("./../../../../output/kernel_dirs/linux-6.18/", [('enable_store', 'drivers/pci/pci-sysfs.c', 323)], []) 
 
 print(capable_caller_configs)
 '''
@@ -82,7 +82,7 @@ conf_opts = capable_caller_configs + [
     "!CONFIG_COMPILE_TEST",
     "!CONFIG_FUNCTION_TRACER",
     ]
-symbolz = [] # capFuncs
+symbolz = ["security_capable"] + capFuncs # Injecting security_capable to make sure we get SECURITY
 print ("conf opts: ", conf_opts)
 # ── Plumbing ──────────────────────────────────────────────────────────────────
 image_id = "custom_build"

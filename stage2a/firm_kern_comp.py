@@ -264,7 +264,7 @@ def _find_c_source_configs(
         return configs
 
     # Locate actual function/symbol definition line if line_no is invalid or pointing to a call-site
-    if sym_name:
+    if sym_name and line_no <= 0:
         def_pattern = re.compile(rf"\b{re.escape(sym_name)}\b\s*\(")
         for idx, text in enumerate(lines, 1):
             if def_pattern.search(text):
@@ -687,8 +687,9 @@ def resolve_symbols_to_configs(
     found_configs: Set[str] = set()
     cscope_db  = os.path.join(image_dir, "cscope.out")
     real_image = os.path.realpath(image_dir)
-
+    print("Who up resolving they symbols ig")
     if not symbols:
+        print ("WHAT THE BARNACLES")
         return []
 
     # Normalize exclude_dirs with trailing slashes
@@ -700,18 +701,13 @@ def resolve_symbols_to_configs(
                 d_clean += os.sep
             norm_exclude.append(d_clean)
 
+    # Must be at top level (4 spaces)
     for item in symbols:
         if not item:
             continue
 
-        if isinstance(item, (tuple, list)):
-            sym_name      = item[0]
-            provided_file = item[1] if len(item) > 1 else None
-            provided_line = item[2] if len(item) > 2 else 0
-        else:
-            sym_name      = item
-            provided_file = None
-            provided_line = 0
+        sym_name, provided_file, provided_line = parse_symbol_spec(item)
+        provided_line = provided_line or 0
 
         clean_sym = re.sub(r"\.(isra|constprop|part)\.\d+", "", str(sym_name)).strip()
         defined_targets: Set[Tuple[str, int]] = set()
@@ -748,19 +744,16 @@ def resolve_symbols_to_configs(
                                 line_no = 0
                             raw_cscope_hits.add((rel_file, line_no))
 
-                    # Fix: Only stop cscope loop if we hit actual .c or .S implementation files
                     if any(f.endswith((".c", ".S")) for f, _ in raw_cscope_hits):
                         break
 
                 except Exception as exc:
                     print(f"  [cscope] Query error for '{clean_sym}': {exc}")
 
-            # Prioritize implementation source files
             c_s_targets = {(f, l) for f, l in raw_cscope_hits if f.endswith((".c", ".S"))}
             if c_s_targets:
                 defined_targets.update(c_s_targets)
             else:
-                # Header fallback: map stem.h -> stem.c in source tree
                 for h_file, _ in {(f, l) for f, l in raw_cscope_hits if f.endswith(".h")}:
                     stem = os.path.splitext(os.path.basename(h_file))[0]
                     for root, _, files in os.walk(real_image):
@@ -774,7 +767,6 @@ def resolve_symbols_to_configs(
                 continue
             reqs = resolve_file_requirements(image_dir, rel_file, line_no, clean_sym)
             found_configs.update(reqs)
-
     return sorted(found_configs)
 
 def find_caller_configs(image_dir: str, target_symbol: str, exclude_dirs: List[str]) -> List[str]:
